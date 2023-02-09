@@ -1,0 +1,20 @@
+name: LuxS2
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - black
+  - isort
+  - matplotlib
+  - pytest
+  - pytorch
+  - pytorch-cuda=11.7
+  - ray-tune
+  - setuptools<=65.5.0
+  - snakeviz
+  - tensorboard
+  - tqdm
+  - pip
+  - pip:
+      - luxai_s2

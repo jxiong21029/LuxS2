@@ -67,7 +67,48 @@ def process_obs(player, game_state, step, obs):
     return game_state
 
 
-def obs_to_game_state(step, env_cfg: EnvConfig, obs):
+@dataclass
+class Board:
+    rubble: np.ndarray
+    ice: np.ndarray
+    ore: np.ndarray
+    lichen: np.ndarray
+    lichen_strains: np.ndarray
+    factory_occupancy_map: np.ndarray
+    factories_per_team: int
+    valid_spawns_mask: np.ndarray
+
+
+@dataclass
+class GameState:
+    """
+    A GameState object at step env_steps. Copied from luxai_s2/state/state.py
+    """
+
+    env_steps: int
+    env_cfg: EnvConfig
+    board: Board
+    units: Dict[str, Dict[str, Unit]] = field(default_factory=dict)
+    factories: Dict[str, Dict[str, Factory]] = field(default_factory=dict)
+    teams: Dict[str, Team] = field(default_factory=dict)
+
+    @property
+    def real_env_steps(self):
+        """
+        the actual env step in the environment, which subtracts the time spent bidding and placing factories
+        """
+        if self.env_cfg.BIDDING_SYSTEM:
+            # + 1 for extra factory placement and + 1 for bidding step
+            return self.env_steps - (self.board.factories_per_team * 2 + 1)
+        else:
+            return self.env_steps
+
+    # various utility functions
+    def is_day(self):
+        return self.real_env_steps % self.env_cfg.CYCLE_LENGTH < self.env_cfg.DAY_LENGTH
+
+
+def obs_to_game_state(step, env_cfg: EnvConfig, obs) -> GameState:
     units = dict()
     for agent in obs["units"]:
         units[agent] = dict()
@@ -116,44 +157,3 @@ def obs_to_game_state(step, env_cfg: EnvConfig, obs):
         factories=factories,
         teams=teams,
     )
-
-
-@dataclass
-class Board:
-    rubble: np.ndarray
-    ice: np.ndarray
-    ore: np.ndarray
-    lichen: np.ndarray
-    lichen_strains: np.ndarray
-    factory_occupancy_map: np.ndarray
-    factories_per_team: int
-    valid_spawns_mask: np.ndarray
-
-
-@dataclass
-class GameState:
-    """
-    A GameState object at step env_steps. Copied from luxai_s2/state/state.py
-    """
-
-    env_steps: int
-    env_cfg: dict
-    board: Board
-    units: Dict[str, Dict[str, Unit]] = field(default_factory=dict)
-    factories: Dict[str, Dict[str, Factory]] = field(default_factory=dict)
-    teams: Dict[str, Team] = field(default_factory=dict)
-
-    @property
-    def real_env_steps(self):
-        """
-        the actual env step in the environment, which subtracts the time spent bidding and placing factories
-        """
-        if self.env_cfg.BIDDING_SYSTEM:
-            # + 1 for extra factory placement and + 1 for bidding step
-            return self.env_steps - (self.board.factories_per_team * 2 + 1)
-        else:
-            return self.env_steps
-
-    # various utility functions
-    def is_day(self):
-        return self.real_env_steps % self.env_cfg.CYCLE_LENGTH < self.env_cfg.DAY_LENGTH

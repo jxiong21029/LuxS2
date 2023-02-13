@@ -5,7 +5,11 @@ channels:
   - conda-forge
 dependencies:
   - black
+  - nvidia::cuda-nvcc=11.7
+  - nvidia::cuda-toolkit=11.7
+  - main::cudnn
   - isort
+  - jax
   - matplotlib
   - pytest
   - pytorch
@@ -17,4 +21,5 @@ dependencies:
   - tqdm
   - pip
   - pip:
+      - juxai_s2
       - luxai_s2

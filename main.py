@@ -1,41 +1,83 @@
-import numpy as np
-from luxai_s2 import LuxAI_S2
-from luxai_s2.config import EnvConfig
-from luxai_s2.utils import my_turn_to_place_factory
+import json
+import sys
+from argparse import Namespace
+from typing import Dict
 
-from lux.kit import obs_to_game_state
+from agent import Agent
+from lux.config import EnvConfig
+from lux.kit import (
+    GameState,
+    from_json,
+    obs_to_game_state,
+    process_action,
+    process_obs,
+    to_json,
+)
+
+### DO NOT REMOVE THE FOLLOWING CODE ###
+agent_dict = (
+    dict()
+)  # store potentially multiple dictionaries as kaggle imports code directly
+agent_prev_obs = dict()
 
 
-class Agent:
-    def __init__(self, player: str, env_cfg: EnvConfig):
-        self.player = player
-        self.opp_player = "player_1" if self.player == "player_0" else "player_0"
-        self.env_cfg = env_cfg
+def agent_fn(observation, configurations):
+    """
+    agent definition for kaggle submission.
+    """
+    global agent_dict
+    step = observation.step
 
-    def setup_act(self, step: int, obs):
-        if step == 0:
-            return {"faction": "MotherMars", "bid": 0}
+    player = observation.player
+    remainingOverageTime = observation.remainingOverageTime
+    if step == 0:
+        env_cfg = EnvConfig.from_dict(configurations["env_cfg"])
+        agent_dict[player] = Agent(player, env_cfg)
+        agent_prev_obs[player] = dict()
+        agent = agent_dict[player]
+    agent = agent_dict[player]
+    obs = process_obs(player, agent_prev_obs[player], step, json.loads(observation.obs))
+    agent_prev_obs[player] = obs
+    agent.step = step
+    if obs["real_env_steps"] < 0:
+        actions = agent.setup_act(step, obs)
+    else:
+        actions = agent.act(step, obs)
 
-        actions = {}
-        game_state = obs_to_game_state(step, self.env_cfg, obs)
+    return process_action(actions)
 
-        is_my_turn = my_turn_to_place_factory(
-            game_state.teams[self.player].place_first, step
-        )
-        if is_my_turn and game_state.teams[self.player].factories_to_place > 0:
-            candidate_positions = np.array(
-                list(zip(*np.where(obs["board"]["valid_spawns_mask"])))
+
+if __name__ == "__main__":
+
+    def read_input():
+        """
+        Reads input from stdin
+        """
+        try:
+            return input()
+        except EOFError as eof:
+            raise SystemExit(eof)
+
+    step = 0
+    player_id = 0
+    configurations = None
+    i = 0
+    while True:
+        inputs = read_input()
+        obs = json.loads(inputs)
+
+        observation = Namespace(
+            **dict(
+                step=obs["step"],
+                obs=json.dumps(obs["obs"]),
+                remainingOverageTime=obs["remainingOverageTime"],
+                player=obs["player"],
+                info=obs["info"],
             )
-
-        # if game_state.teams[self.player].water
-
-        return actions
-
-    def act(self, step: int, obs):
-        actions = {}
-        game_state = obs_to_game_state(step, self.env_cfg, obs)
-        return actions
-
-
-def evaluate():
-    pass
+        )
+        if i == 0:
+            configurations = obs["info"]["env_cfg"]
+        i += 1
+        actions = agent_fn(observation, dict(env_cfg=configurations))
+        # send actions to engine
+        print(json.dumps(actions))

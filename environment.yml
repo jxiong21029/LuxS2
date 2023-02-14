@@ -7,7 +7,6 @@ dependencies:
   - black
   - nvidia::cuda-nvcc=11.7
   - nvidia::cuda-toolkit=11.7
-  - main::cudnn
   - isort
   - jax
   - matplotlib

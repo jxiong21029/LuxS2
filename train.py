@@ -2,11 +2,17 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jux.actions import ActionQueue, FactoryAction, JuxAction, UnitAction
+from jux.actions import (
+    ActionQueue,
+    FactoryAction,
+    JuxAction,
+    UnitAction,
+    UnitActionType,
+)
 from jux.config import EnvConfig, JuxBufferConfig
 from jux.env import JuxEnv
 from jux.state import State as JuxState
-from jux.utils import load_replay
+from jux.utils import INT8_MAX, INT16_MAX, load_replay
 
 
 @jax.jit
@@ -47,32 +53,68 @@ def state_to_obs(state: JuxState):
 def action_arr_to_jux(
     state: JuxState, action_arr: jax.Array, env_cfg, buf_cfg
 ) -> JuxAction:
-    # idle/interact, 4 directions -> 5 actions
-    ret: JuxAction = JuxAction.empty(EnvConfig(), JuxBufferConfig())
-
     batch_shape = (
         2,
         buf_cfg.MAX_N_UNITS,
         env_cfg.UNIT_ACTION_QUEUE_SIZE,
     )
-    unit_action_queue = jax.tree_map(
-        lambda x: x[None].repeat(np.prod(batch_shape)).reshape(batch_shape),
-        UnitAction.do_nothing(),
-    )
 
     # heuristic factory behavior:
     # if have 10 metal / 100 power: build light
     # else: do nothing
-    ret = JuxAction(
-        factory_action=jnp.where(
-            (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
-            FactoryAction.BUILD_LIGHT,
-            FactoryAction.DO_NOTHING,
-        ),
-        unit_action_queue=unit_action_queue,
-        unit_action_queue_count=jnp.zeros((2, buf_cfg.MAX_N_UNITS), dtype=jnp.int8),
-        unit_action_queue_update=jnp.zeros((2, buf_cfg.MAX_N_UNITS), dtype=jnp.bool_),
+    factory_action = jnp.where(
+        (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
+        FactoryAction.BUILD_LIGHT,
+        FactoryAction.DO_NOTHING,
     )
+
+    # Six unit actions: idle + 4 directions + interact
+    # action_arr is an int8[HW]
+
+    unit_mask = state.board.units_map != INT16_MAX
+
+    unit_idxs = state.unit_id2idx.at[state.board.units_map].get(
+        mode="fill", fill_value=INT16_MAX
+    )
+
+    interact_mask = unit_mask & (action_arr == 0)
+    factory_interact_mask = interact_mask & (
+        state.board.factory_occupancy_map != INT8_MAX
+    )
+    dig_mask = interact_mask & (
+        state.board.ice | state.board.ore | (state.board.lichen > 0)
+    )
+
+    # [2, MAX_N_UNITS,  UNIT_ACTION_QUEUE_SIZE]
+    action_types = jnp.full(batch_shape, fill_value=UnitActionType.DO_NOTHING)
+    action_types = action_types.at[
+        jnp.where(
+            (action_arr == 5)
+            & (
+                state.board.ice
+                | state.board.ore
+                | (state.board.rubble > 0)
+                | (state.board.lichen > 0)
+            ),
+            unit_idxs,
+            INT16_MAX,
+        )
+    ].set(UnitActionType.DIG, mode="drop")
+
+    unit_action_queue = UnitAction(
+        action_type=None,
+        direction=None,
+        resource_type=None,
+        amount=None,
+        repeat=None,
+        n=None,
+    )
+
+    JuxAction()
+
+    # ret = JuxAction(
+    #     factory_action=,
+    # )
 
 
 class QNet(nn.Module):
@@ -82,7 +124,7 @@ class QNet(nn.Module):
     def __call__(self, obs):
         x = nn.Conv(32, kernel_size=(7, 7))(obs)
         x = nn.relu(x)
-        x = nn.Conv(5, kernel_size=(1, 1))(x)
+        x = nn.Conv(6, kernel_size=(1, 1))(x)
         return x
 
 

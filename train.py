@@ -1,6 +1,9 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import numpy as np
+from jux.actions import ActionQueue, FactoryAction, JuxAction, UnitAction
+from jux.config import EnvConfig, JuxBufferConfig
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 from jux.utils import load_replay
@@ -39,10 +42,37 @@ def state_to_obs(state: JuxState):
     return ret
 
 
+# handles actions for both teams
 @jax.jit
-def action_tensor_to_jux(actions: jax.Array):
-    # idle/interact, NSEW -> 5 actions
-    pass
+def action_arr_to_jux(
+    state: JuxState, action_arr: jax.Array, env_cfg, buf_cfg
+) -> JuxAction:
+    # idle/interact, 4 directions -> 5 actions
+    ret: JuxAction = JuxAction.empty(EnvConfig(), JuxBufferConfig())
+
+    batch_shape = (
+        2,
+        buf_cfg.MAX_N_UNITS,
+        env_cfg.UNIT_ACTION_QUEUE_SIZE,
+    )
+    unit_action_queue = jax.tree_map(
+        lambda x: x[None].repeat(np.prod(batch_shape)).reshape(batch_shape),
+        UnitAction.do_nothing(),
+    )
+
+    # heuristic factory behavior:
+    # if have 10 metal / 100 power: build light
+    # else: do nothing
+    ret = JuxAction(
+        factory_action=jnp.where(
+            (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
+            FactoryAction.BUILD_LIGHT,
+            FactoryAction.DO_NOTHING,
+        ),
+        unit_action_queue=unit_action_queue,
+        unit_action_queue_count=jnp.zeros((2, buf_cfg.MAX_N_UNITS), dtype=jnp.int8),
+        unit_action_queue_update=jnp.zeros((2, buf_cfg.MAX_N_UNITS), dtype=jnp.bool_),
+    )
 
 
 class QNet(nn.Module):
@@ -62,7 +92,7 @@ def main():
     )
     jux_env, state = JuxEnv.from_lux(lux_env)
     obs = state_to_obs(state)
-    print(obs)
+    action_arr_to_jux(state, jnp.zeros(2))
 
 
 if __name__ == "__main__":

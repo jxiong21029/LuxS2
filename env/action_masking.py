@@ -5,7 +5,7 @@ from jux.env import State as JuxState
 from jux.utils import INT8_MAX
 
 
-def dig_mask(state: JuxState):
+def get_dig_mask(state: JuxState):
     # dig masking: can only dig resource OR rubble OR other team lichen
     lichen_team = state.factory_id2idx.at[state.board.lichen_strains, 0].get(
         mode="fill", fill_value=INT8_MAX
@@ -29,14 +29,3 @@ def dig_mask(state: JuxState):
         on_opponent_lichen,
         state.board.ice | state.board.ore | state.board.rubble,
     )
-
-
-def get_action_mask(state: JuxState):
-    # move masking: avoid collisions (cycle detection, etc.)
-    # pickup masking: can only pickup on factory occupancy
-
-    ret = jnp.ones((48, 48, 7), dtype=jnp.bool_)
-
-    ret = ret.at[..., 5].set(dig_mask(state))
-
-    return ret

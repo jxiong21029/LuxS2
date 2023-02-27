@@ -48,18 +48,13 @@ for _ in tqdm.trange(t):
             np.ones(in_bounds.sum()),
             (flat_idx[in_bounds].flatten(), np.arange(5 * n)[in_bounds.flatten()]),
         ),
-        shape=(48 * 48, 5 * n)
+        shape=(48 * 48, 5 * n),
     )
     b_lt = np.ones(48 * 48)
 
     i = np.arange(n).repeat(5)
     j = np.arange(5 * n)
-    a_eq = coo_array(
-        (
-            np.ones(5 * n),
-            (i, j)
-        )
-    )
+    a_eq = coo_array((np.ones(5 * n), (i, j)))
     b_eq = np.ones(n)
 
     # print(c.shape)

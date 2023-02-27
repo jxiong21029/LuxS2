@@ -9,12 +9,16 @@ from jux.actions import (
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from .action_masking import get_action_mask
+from env.action_handling import (
+    best_joint_actions,
+    get_dig_mask,
+    resulting_position_scores,
+)
 
 
 @pytest.fixture
 def sample_state():
-    lux_env, lux_actions = load_replay("tests/test_replay.json")
+    lux_env, lux_actions = load_replay("replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
 
     lux_act = next(lux_actions)
@@ -27,7 +31,7 @@ def sample_state():
 
         state, _ = jux_env.step_factory_placement(state, spawn, water, metal)
 
-    for _ in range(25):
+    for _ in range(800):
         lux_act = next(lux_actions)
         jux_act = JuxAction.from_lux(state, lux_act)
         state, _ = jux_env.step_late_game(state, jux_act)
@@ -35,22 +39,31 @@ def sample_state():
     return state
 
 
-def test_action_handling_compiles(sample_state):
-    jitted = jax.jit(get_action_mask)
-    jitted(sample_state)
+def test_dig_mask(sample_state):
+    dig_mask = get_dig_mask(sample_state)
+    assert dig_mask.shape == (2, 1000)
+
+    for team in range(2):
+        assert jnp.all(~dig_mask[sample_state.n_units[team] :])
+
+        for i in range(sample_state.n_units[team]):
+            x, y = sample_state.units.pos.x[team, i], sample_state.units.pos.y[team, i]
+            can_dig = (
+                sample_state.board.ice[x, y]
+                | sample_state.board.ore[x, y]
+                | sample_state.board.rubble[x, y]
+            )
+            assert ~can_dig | dig_mask[team, i]
 
 
-def test_action_handling_correct(sample_state):
-    action_mask = get_action_mask(sample_state)
-    dig_mask = action_mask[..., 5]
+def test_resulting_pos_scores(sample_state):
+    scores = resulting_position_scores(sample_state, jnp.zeros((48, 48, 7)))
+    for team in range(2):
+        assert not jnp.isnan(scores[team, : sample_state.n_units[team]]).any()
+        assert jnp.isnan(scores[team, sample_state.n_units[team] :]).all()
 
-    sufficient = (
-        sample_state.board.ice
-        | sample_state.board.ice
-        | sample_state.board.rubble
-        | sample_state.board.lichen
-        > 0
+
+def test_action_maximization(sample_state):
+    best_joint_actions(
+        sample_state, resulting_position_scores(sample_state, jnp.zeros((48, 48, 7)))
     )
-
-    # assert sufficient ==> dig_mask
-    assert jnp.all(~sufficient | dig_mask)

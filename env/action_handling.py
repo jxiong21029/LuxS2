@@ -4,7 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array as JaxArray
 from jux.actions import FactoryAction, JuxAction, UnitAction, UnitActionType
+from jux.map.position import Direction
 from jux.state import State as JuxState
+from jux.unit_cargo import ResourceType
 from jux.utils import INT8_MAX
 from scipy.optimize import linprog
 from scipy.sparse import coo_array
@@ -148,12 +150,12 @@ def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray)
 
 @jax.jit
 def step_best(state: JuxState, action_scores: JaxArray):
-    chex.assert_shape(action_scores, (2, 1000, 5))
+    chex.assert_shape(action_scores, (48, 48, 7))
 
     scores, dig_best, dropoff_best = position_scores(state, action_scores)
     selected_idx = jax.pure_callback(
         maximize_actions_callback,
-        jax.ShapeDtypeStruct(shape=(2, action_scores.shape[1]), dtype=jnp.int8),
+        jax.ShapeDtypeStruct(shape=(2, 1000), dtype=jnp.int8),
         state,
         scores,
         vectorized=False,
@@ -167,31 +169,58 @@ def step_best(state: JuxState, action_scores: JaxArray):
     )
 
     # reconstruct non-movement actions
-    action_types = jnp.full((2, 1000, 20), fill_value=UnitActionType.DO_NOTHING)
-    action_types = action_types.at[..., 0].set(
-        jnp.where(dig_best, UnitActionType.DIG, action_types)
+    action_types = jnp.full(
+        (2, 1000, 20), fill_value=UnitActionType.DO_NOTHING, dtype=jnp.int8
     )
     action_types = action_types.at[..., 0].set(
-        jnp.where(dropoff_best, UnitActionType.TRANSFER, action_types)
+        jnp.where(dig_best, UnitActionType.DIG, action_types[..., 0])
+    )
+    action_types = action_types.at[..., 0].set(
+        jnp.where(dropoff_best, UnitActionType.TRANSFER, action_types[..., 0])
     )
     action_types = action_types.at[..., 0].set(
         jnp.where(
-            (1 <= selected_idx) & (selected_idx <= 4), UnitActionType.MOVE, action_types
+            (1 <= selected_idx) & (selected_idx <= 4),
+            UnitActionType.MOVE,
+            action_types[..., 0],
         )
     )
+    direction = jnp.zeros((2, 1000, 20), dtype=jnp.int8)
+    direction = direction.at[..., 0].set(
+        jnp.where(selected_idx == 1, Direction.UP, direction[..., 0])
+    )
+    direction = direction.at[..., 0].set(
+        jnp.where(selected_idx == 2, Direction.RIGHT, direction[..., 0])
+    )
+    direction = direction.at[..., 0].set(
+        jnp.where(selected_idx == 3, Direction.DOWN, direction[..., 0])
+    )
+    direction = direction.at[..., 0].set(
+        jnp.where(selected_idx == 4, Direction.LEFT, direction[..., 0])
+    )
+
+    resource_type = jnp.full((2, 1000, 20), fill_value=ResourceType.ice, dtype=jnp.int8)
+    amount = jnp.zeros((2, 1000, 20), dtype=jnp.int16)
+    amount = amount.at[..., 0].set(state.units.cargo.ice)
+    repeat = jnp.ones((2, 1000, 20), dtype=jnp.int16)
+    n = jnp.ones((2, 1000, 20), dtype=jnp.int16)
 
     unit_action_queue = UnitAction(
-        action_type=None,
-        direction=None,
-        resource_type=None,
-        amount=None,
-        repeat=None,
-        n=None,
+        action_type=action_types,
+        direction=direction,
+        resource_type=resource_type,
+        amount=amount,
+        repeat=repeat,
+        n=n,
     )
+
+    unit_action_queue_count = jnp.ones((2, 1000), dtype=jnp.int8)
+    unit_action_queue_update = jnp.ones((2, 1000), dtype=jnp.bool_)
 
     action = JuxAction(
         factory_action=factory_action,
-        unit_action_queue=None,
-        unit_action_queue_count=None,
-        unit_action_queue_update=None,
+        unit_action_queue=unit_action_queue,
+        unit_action_queue_count=unit_action_queue_count,
+        unit_action_queue_update=unit_action_queue_update,
     )
+    return state._step_late_game(action)

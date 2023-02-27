@@ -9,7 +9,12 @@ from jux.actions import (
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from env.action_handling import get_dig_mask, maximize_actions_callback, position_scores
+from env.action_handling import (
+    get_dig_mask,
+    maximize_actions_callback,
+    position_scores,
+    step_best,
+)
 
 
 @pytest.fixture
@@ -71,3 +76,8 @@ def test_resulting_pos_scores(sample_state):
 def test_action_maximization(sample_state):
     scores, _, _ = position_scores(sample_state, np.zeros((48, 48, 7)))
     maximize_actions_callback(sample_state, scores)
+
+
+def test_action_handling(sample_state):
+    scores = jnp.zeros((48, 48, 7))
+    step_best(sample_state, scores)

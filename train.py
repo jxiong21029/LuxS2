@@ -15,6 +15,8 @@ from jux.state import State as JuxState
 from jux.utils import INT8_MAX, INT16_MAX, load_replay
 
 
+# TODO: observations should include the units' action queues (in this case, simply the
+#   last action taken).
 @jax.jit
 def state_to_obs(state: JuxState):
     # for now: heuristic behavior for bidding, factory placement, and factory actions

@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array as JaxArray
+from jux.actions import FactoryAction, JuxAction, UnitAction, UnitActionType
 from jux.state import State as JuxState
 from jux.utils import INT8_MAX
 from scipy.optimize import linprog
@@ -34,11 +35,11 @@ def get_dig_mask(state: JuxState):
 
 
 @jax.jit
-def resulting_position_scores(state: JuxState, action_scores: JaxArray):
+def position_scores(state: JuxState, action_scores: JaxArray):
     """
     Q predictions for each action -> max Q prediction for each resulting position
 
-    action_scores: [MAX_N_AGENTS, 7]?
+    action_scores (48, 48, 7)
         0: idle
         1: move up
         2: move right
@@ -48,35 +49,40 @@ def resulting_position_scores(state: JuxState, action_scores: JaxArray):
         6: dropoff
     """
 
+    chex.assert_shape(action_scores, (48, 48, 7))
     unit_x, unit_y = state.units.pos.x, state.units.pos.y  # (2, U)
-
     ret = jnp.full((2, 1000, 5), fill_value=np.nan)
+    dig_best = jnp.zeros((2, 1000), dtype=jnp.bool_)
+    dropoff_best = jnp.zeros((2, 1000), dtype=jnp.bool_)
 
     dig_mask = get_dig_mask(state)
     for team in range(2):
         scores = action_scores.at[unit_x[team], unit_y[team]].get(
             mode="fill", fill_value=np.nan
         )
-        chex.assert_shape(scores, (1000, 7))
 
+        dig_best = dig_best.at[team].set(
+            dig_mask[team] & (scores[..., 5] > scores[..., 0])
+        )
         scores = scores.at[..., 0].set(
             jnp.where(
-                dig_mask[team] & (scores[..., 5] > scores[..., 0]),
+                dig_best[team],
                 scores[..., 5],
                 scores[..., 0],
             )
         )
-        chex.assert_shape(scores, (1000, 7))
 
         factory_mask = state.board.factory_occupancy_map.at[
             unit_x[team], unit_y[team]
         ].get(mode="fill", fill_value=INT8_MAX)
         chex.assert_shape(factory_mask, (1000,))
-        chex.assert_shape(scores, (1000, 7))
 
+        dropoff_best = dropoff_best.at[team].set(
+            (factory_mask < INT8_MAX) & (scores[..., 6] > scores[..., 0])
+        )
         scores = scores.at[..., 0].set(
             jnp.where(
-                (factory_mask < INT8_MAX) & (scores[..., 6] > scores[..., 0]),
+                dropoff_best[team],
                 scores[..., 6],
                 scores[..., 0],
             )
@@ -84,8 +90,7 @@ def resulting_position_scores(state: JuxState, action_scores: JaxArray):
         chex.assert_shape(scores, (1000, 7))
 
         ret = ret.at[team].set(scores[..., :5])
-
-    return ret
+    return ret, dig_best, dropoff_best
 
 
 directions = np.array(
@@ -99,7 +104,8 @@ directions = np.array(
 )
 
 
-def best_joint_actions(state: JuxState, resulting_pos_scores: JaxArray):
+def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray):
+    ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
     for team in range(2):
         n = state.n_units[team]
         unit_pos = np.asarray(state.units.pos.pos[team, :n])  # N, 2
@@ -107,7 +113,7 @@ def best_joint_actions(state: JuxState, resulting_pos_scores: JaxArray):
 
         scores = resulting_pos_scores[team, :n]  # N, 5
 
-        c = np.asarray(scores).ravel()
+        c = scores.ravel()
         if team == 1:
             c = c * -1
 
@@ -134,5 +140,58 @@ def best_joint_actions(state: JuxState, resulting_pos_scores: JaxArray):
         a_eq = coo_array((np.ones(5 * n), (i, j)))
         b_eq = np.ones(n)
 
-        res = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
-        return res.x
+        result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
+        coeffs = result.x.reshape(scores.shape)
+        ret[team, np.arange(n)] = np.argmax(coeffs, axis=1)
+    return ret
+
+
+@jax.jit
+def step_best(state: JuxState, action_scores: JaxArray):
+    chex.assert_shape(action_scores, (2, 1000, 5))
+
+    scores, dig_best, dropoff_best = position_scores(state, action_scores)
+    selected_idx = jax.pure_callback(
+        maximize_actions_callback,
+        jax.ShapeDtypeStruct(shape=(2, action_scores.shape[1]), dtype=jnp.int8),
+        state,
+        scores,
+        vectorized=False,
+    )  # (2, MAX_N_UNITS)
+
+    # heuristic factory behavior: simply build light robots when possible
+    factory_action = jnp.where(
+        (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
+        FactoryAction.BUILD_LIGHT,
+        FactoryAction.DO_NOTHING,
+    )
+
+    # reconstruct non-movement actions
+    action_types = jnp.full((2, 1000, 20), fill_value=UnitActionType.DO_NOTHING)
+    action_types = action_types.at[..., 0].set(
+        jnp.where(dig_best, UnitActionType.DIG, action_types)
+    )
+    action_types = action_types.at[..., 0].set(
+        jnp.where(dropoff_best, UnitActionType.TRANSFER, action_types)
+    )
+    action_types = action_types.at[..., 0].set(
+        jnp.where(
+            (1 <= selected_idx) & (selected_idx <= 4), UnitActionType.MOVE, action_types
+        )
+    )
+
+    unit_action_queue = UnitAction(
+        action_type=None,
+        direction=None,
+        resource_type=None,
+        amount=None,
+        repeat=None,
+        n=None,
+    )
+
+    action = JuxAction(
+        factory_action=factory_action,
+        unit_action_queue=None,
+        unit_action_queue_count=None,
+        unit_action_queue_update=None,
+    )

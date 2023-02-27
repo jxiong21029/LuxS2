@@ -1,5 +1,5 @@
-import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from jux.actions import (
     JuxAction,
@@ -9,11 +9,7 @@ from jux.actions import (
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from env.action_handling import (
-    best_joint_actions,
-    get_dig_mask,
-    resulting_position_scores,
-)
+from env.action_handling import get_dig_mask, maximize_actions_callback, position_scores
 
 
 @pytest.fixture
@@ -57,13 +53,21 @@ def test_dig_mask(sample_state):
 
 
 def test_resulting_pos_scores(sample_state):
-    scores = resulting_position_scores(sample_state, jnp.zeros((48, 48, 7)))
+    scores, dig_best, dropoff_best = position_scores(
+        sample_state, jnp.zeros((48, 48, 7))
+    )
     for team in range(2):
-        assert not jnp.isnan(scores[team, : sample_state.n_units[team]]).any()
-        assert jnp.isnan(scores[team, sample_state.n_units[team] :]).all()
+        n = sample_state.n_units[team]
+        assert not jnp.isnan(scores[team, :n]).any()
+        assert jnp.isnan(scores[team, n:]).all()
+
+        assert not jnp.any(dig_best[team, n:])
+        assert not jnp.any(dropoff_best[team, n:])
+
+        assert not jnp.any(dig_best & dropoff_best)
+        assert jnp.all(~(dig_best | dropoff_best) | (jnp.argmax(scores, axis=2) == 0))
 
 
 def test_action_maximization(sample_state):
-    best_joint_actions(
-        sample_state, resulting_position_scores(sample_state, jnp.zeros((48, 48, 7)))
-    )
+    scores, _, _ = position_scores(sample_state, np.zeros((48, 48, 7)))
+    maximize_actions_callback(sample_state, scores)

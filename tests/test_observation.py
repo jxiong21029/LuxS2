@@ -6,19 +6,19 @@ from jux.actions import (
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from train import state_to_obs
+from observation import get_obs
 
 
 def test_obs_smoke():
     lux_env, lux_actions = load_replay("tests/test_replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
-    state_to_obs(state)
+    get_obs(state)
 
     # bidding phase
     lux_act = next(lux_actions)
     bid, faction = bid_action_from_lux(lux_act)
     state, _ = jux_env.step_bid(state, bid, faction)
-    state_to_obs(state)
+    get_obs(state)
 
     # placement phase
     while state.real_env_steps < 0:
@@ -26,14 +26,14 @@ def test_obs_smoke():
         spawn, water, metal = factory_placement_action_from_lux(lux_act)
 
         state, _ = jux_env.step_factory_placement(state, spawn, water, metal)
-    state_to_obs(state)
+    get_obs(state)
 
     # main phase
     for _ in range(25):
         lux_act = next(lux_actions)
         jux_act = JuxAction.from_lux(state, lux_act)
         state, _ = jux_env.step_late_game(state, jux_act)
-    state_to_obs(state)
+    get_obs(state)
 
 
 def test_obs_correct():
@@ -56,7 +56,7 @@ def test_obs_correct():
         jux_act = JuxAction.from_lux(state, lux_act)
         state, _ = jux_env.step_late_game(state, jux_act)
 
-        obs = state_to_obs(state)
+        obs = get_obs(state)
 
         for team in range(2):
             for i in range(state.n_units[team]):

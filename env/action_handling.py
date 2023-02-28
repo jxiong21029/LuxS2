@@ -107,50 +107,62 @@ directions = np.array(
 
 
 def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray):
-    try:
-        ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
-        for team in range(2):
-            n = state.n_units[team]
-            if n == 0:
-                continue
-            unit_pos = np.asarray(state.units.pos.pos[team, :n])  # N, 2
-            assert unit_pos.shape == (n, 2)
+    ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
+    for team in range(2):
+        n = state.n_units[team]
+        if n == 0:
+            continue
+        unit_pos = np.asarray(state.units.pos.pos[team, :n], dtype=np.int64)  # N, 2
+        assert unit_pos.shape == (n, 2)
 
-            scores = resulting_pos_scores[team, :n]  # N, 5
+        scores = resulting_pos_scores[team, :n]  # N, 5
 
-            c = scores.ravel()
-            if team == 1:
-                c = c * -1
+        c = -scores.ravel()
+        if team == 1:
+            c = c * -1
 
-            destinations = unit_pos[:, None] + directions  # N, 5, 2
-            in_bounds = (
-                (0 <= destinations[..., 0])
-                & (destinations[..., 0] < 48)
-                & (0 <= destinations[..., 1])
-                & (destinations[..., 1] < 48)
-            )  # N, 5 boolean arr
-            flat_idx = 48 * destinations[..., 0] + destinations[..., 1]  # N, 5
+        destinations = unit_pos[:, None] + directions  # N, 5, 2
+        in_bounds = (
+            (0 <= destinations[..., 0])
+            & (destinations[..., 0] < 48)
+            & (0 <= destinations[..., 1])
+            & (destinations[..., 1] < 48)
+        ).ravel()  # (N*5,) boolean arr -- for each move, bool (whether in bounds)
 
-            a_lt = coo_array(
+        flat_idx = (48 * destinations[..., 0] + destinations[..., 1]).ravel()  # (N*5,)
+        # for each move, int in [0, 48^2) -- flattened index on board of destination
+
+        a_lt = coo_array(
+            (
+                np.ones(in_bounds.sum()),
+                (flat_idx[in_bounds], np.arange(5 * n)[in_bounds]),
+            ),
+            shape=(48 * 48, 5 * n),
+        )
+        b_lt = np.ones(48 * 48)
+
+        # n rows for the (each unit must select exactly one move) constraint
+        # 1 final row for the (no out-of-bounds moves may be selected)
+        num_oob = (~in_bounds).sum()
+        a_eq = coo_array(
+            (
+                np.ones(5 * n + num_oob),
                 (
-                    np.ones(in_bounds.sum()),
-                    (flat_idx[in_bounds], np.arange(5 * n)[in_bounds.ravel()]),
+                    np.concatenate(
+                        [np.arange(n).repeat(5), np.full(num_oob, fill_value=5 * n)]
+                    ),
+                    np.concatenate([np.arange(5 * n), (~in_bounds).nonzero()[0]]),
                 ),
-                shape=(48 * 48, 5 * n),
-            )
-            b_lt = np.ones(48 * 48)
+            ),
+            shape=(n + 1, 5 * n),
+        )
+        b_eq = np.ones(n + 1)
+        b_eq[-1] = 0  # sum of OOB moves must be zero
 
-            i = np.arange(n).repeat(5)[in_bounds.ravel()]
-            j = np.arange(5 * n)[in_bounds.ravel()]
-            a_eq = coo_array((np.ones(i.shape), (i, j)), shape=(n, 5 * n))
-            b_eq = np.ones(n)
-
-            result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
-            coeffs = result.x.reshape(scores.shape)
-            ret[team, np.arange(n)] = np.argmax(coeffs, axis=1)
-        return ret
-    except AttributeError:
-        breakpoint()
+        result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
+        coeffs = result.x.reshape(scores.shape)
+        ret[team, np.arange(n)] = np.argmax(coeffs, axis=1)
+    return ret
 
 
 @jax.jit

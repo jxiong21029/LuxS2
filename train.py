@@ -1,14 +1,16 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import matplotlib
 import matplotlib.pyplot as plt
-import tqdm
 from jux.actions import bid_action_from_lux, factory_placement_action_from_lux
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 from jux.utils import load_replay
 
 from env.action_handling import step_best
+
+matplotlib.use("agg")
 
 
 # TODO: observations should include the units' action queues (in this case, simply the
@@ -75,9 +77,14 @@ def main():
     key = jax.random.PRNGKey(42)
     params = model.init(key, state_to_obs(state))
 
-    for i in tqdm.trange(1000):
+    for i in range(1000):
         action_values = model.apply(params, state_to_obs(state))
         state: JuxState = step_best(state, action_values)
+        done = (state.n_factories == 0).any()
+        if done:
+            break
+        if i % 20 == 0:
+            print(f"Units: {state.n_units.sum()}, Factories: {state.n_factories.sum()}")
 
         img = jux_env.render(state, mode="rgb_array")
         fig, ax = plt.subplots(constrained_layout=True)

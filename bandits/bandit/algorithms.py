@@ -29,6 +29,7 @@ See the following references (not all of these are currently implemented):
     [10.48550/arXiv.1506.00312](https://doi.org/10.48550/arXiv.1506.00312).
 """
 import numpy as np
+
 from . import utils
 from .utils import Arm, Duel
 
@@ -36,13 +37,14 @@ from .utils import Arm, Duel
 # TODO: beat the mean
 # TODO: copeland dueling bandits (scb)
 
+
 def naive(K: int, duel: Duel, T: int) -> Arm:
-    """ Plays every pair of arms against each other and picks the winner. """
+    """Plays every pair of arms against each other and picks the winner."""
     wins = np.zeros((K, K), dtype=np.int64)
     for _ in range(T):
         # pick the pair that have been played the least
         nums = wins + wins.T
-        np.fill_diagonal(nums, 2*T)
+        np.fill_diagonal(nums, 2 * T)
         index = np.argmin(nums)
         arm1, arm2 = np.unravel_index(index, nums.shape)
         # play them against each other and update statistics
@@ -50,25 +52,29 @@ def naive(K: int, duel: Duel, T: int) -> Arm:
         wins[winner, loser] += 1
     return utils.copeland_winner_wins(wins)
 
+
 # Double Thompson Sampling ([6])
 
+
 def d_ts(
-    K: int, duel: Duel, T: int,
+    K: int,
+    duel: Duel,
+    T: int,
     alpha: float,
-    rng: np.random.Generator=np.random.default_rng(),
+    rng: np.random.Generator = np.random.default_rng(),
 ) -> Arm:
-    """ The Double Thompson Sampling (D-TS) algorithm 1 of [6]. """
+    """The Double Thompson Sampling (D-TS) algorithm 1 of [6]."""
     B = np.zeros((K, K))
     for t in range(1, T + 1):
         # phase 1: choose the first candidate
         total = B + B.T
         mask = total != 0
         U = np.zeros((K, K))
-        U[mask] = B[mask]/total[mask] + np.sqrt(alpha*np.log(t)/total[mask])
+        U[mask] = B[mask] / total[mask] + np.sqrt(alpha * np.log(t) / total[mask])
         # x/0 := 1 for all x
         U[~mask] = 2
         L = np.zeros((K, K))
-        L[mask] = B[mask]/total[mask] - np.sqrt(alpha*np.log(t)/total[mask])
+        L[mask] = B[mask] / total[mask] - np.sqrt(alpha * np.log(t) / total[mask])
         L[~mask] = 0
         # u_ii = l_ii = 1/2
         np.fill_diagonal(U, 0.5)
@@ -96,24 +102,25 @@ def d_ts(
         B[winner, loser] += 1
     return utils.copeland_winner_wins(B)
 
+
 # Tsallis-INF methods ([8, 5])
 
+
 def learning_rate(t: int, rv: bool) -> float:
-    """ Return the learning rate (theorem 1 of [8]). """
-    return (
-        4*np.sqrt(1/t) if rv else
-        2*np.sqrt(1/t)
-    )
+    """Return the learning rate (theorem 1 of [8])."""
+    return 4 * np.sqrt(1 / t) if rv else 2 * np.sqrt(1 / t)
+
 
 def omd_w(x: float, losses: np.ndarray, lr: float) -> tuple[np.ndarray, float]:
-    """ Return the weights for a given normalizing constant. """
-    w = 4/np.square(lr*(losses - x))
-    return w, np.sum(w) # type: ignore
+    """Return the weights for a given normalizing constant."""
+    w = 4 / np.square(lr * (losses - x))
+    return w, np.sum(w)  # type: ignore
+
 
 def omd_monotone(
     losses: np.ndarray,
     lr: float,
-    eps: float=1e-12,
+    eps: float = 1e-12,
 ) -> tuple[float, np.ndarray]:
     """
     Binary search for the normalizing factor.
@@ -149,7 +156,7 @@ def omd_monotone(
     # binary search
     middle = left
     while not np.isclose(wsum, 1, rtol=eps):
-        middle = (left + right)/2
+        middle = (left + right) / 2
         w, wsum = omd_w(middle, losses, lr)
         if wsum > 1:
             right = middle
@@ -157,28 +164,27 @@ def omd_monotone(
             left = middle
     return middle, w
 
+
 def loss_estimator(loss: float, w: float, lr: float, rv: bool):
     """
     Compute importance-weighted (IW) or reduced-variance (RV) loss estimators.
 
     These estimators are an unbiased estimate for the loss.
     """
-    b = 1/2*(w >= lr**2)
-    return (
-        (loss - b)/w + b if rv else
-        loss/w
-    )
+    b = 1 / 2 * (w >= lr**2)
+    return (loss - b) / w + b if rv else loss / w
+
 
 def omd_newton(
     x: float,
     losses: np.ndarray,
     lr: float,
-    eps: float=1e-12,
+    eps: float = 1e-12,
 ) -> tuple[float, np.ndarray]:
-    """ Newton's method for the weights, algorithm 2 of [8]. """
+    """Newton's method for the weights, algorithm 2 of [8]."""
     w, wsum = omd_w(x, losses, lr)
     while not np.isclose(wsum, 1, rtol=eps):
-        x -= (wsum - 1)/(lr*np.sum(np.sqrt(w**3)))
+        x -= (wsum - 1) / (lr * np.sum(np.sqrt(w**3)))
         w, newsum = omd_w(x, losses, lr)
         # not making progress, switch to safe binary search
         if abs(newsum - 1) > abs(wsum - 1):
@@ -186,18 +192,21 @@ def omd_newton(
         wsum = newsum
     return x, w
 
+
 def vdb_ind(
-    K: int, duel: Duel, T: int,
-    rv: bool=True,
-    rng: np.random.Generator=np.random.default_rng(),
+    K: int,
+    duel: Duel,
+    T: int,
+    rv: bool = True,
+    rng: np.random.Generator = np.random.default_rng(),
 ) -> Arm:
-    """ The Versatile-DB (VDB) algorithm 3 of [5]. """
+    """The Versatile-DB (VDB) algorithm 3 of [5]."""
     losses = [np.zeros(K) for _ in range(2)]
-    x = [-np.sqrt(K)]*2
+    x = [-np.sqrt(K)] * 2
     for t in range(1, T + 1):
         lr = learning_rate(t, rv)
-        w = [np.empty(0)]*2
-        arms = [0]*2
+        w = [np.empty(0)] * 2
+        arms = [0] * 2
         for i in range(2):
             # choose from distribution (update x for warm start)
             x[i], w[i] = omd_newton(x[i], losses[i], lr)
@@ -213,12 +222,15 @@ def vdb_ind(
             losses[i][arms[i]] += loss
     return np.argmin(losses[0] + losses[1])
 
+
 def vdb(
-    K: int, duel: Duel, T: int,
-    rv: bool=True,
-    rng: np.random.Generator=np.random.default_rng(),
+    K: int,
+    duel: Duel,
+    T: int,
+    rv: bool = True,
+    rng: np.random.Generator = np.random.default_rng(),
 ) -> Arm:
-    """ The Versatile-DB (VDB) algorithm 3 of [5], remark 2. """
+    """The Versatile-DB (VDB) algorithm 3 of [5], remark 2."""
     losses = np.zeros(K)
     x = -np.sqrt(K)
     for t in range(1, T + 1):
@@ -236,4 +248,3 @@ def vdb(
             # update losses: ignore remark 2's suggestion to divide by 2
             losses[arms[i]] += loss
     return np.argmin(losses)
-

@@ -1,18 +1,25 @@
 import numpy as np
-from .common import Problem, duel_matrix, preference_matrix_get, shuffle_matrix
-from .common import is_copeland_winner
-from ..utils import copeland_regret
+
 from .. import utils
+from ..utils import copeland_regret
+from .common import (
+    Problem,
+    duel_matrix,
+    is_copeland_winner,
+    preference_matrix_get,
+    shuffle_matrix,
+)
+
 
 class RandomProblem(Problem):
-    """ A completely random problem. """
+    """A completely random problem."""
 
     def __init__(
         self,
         K: int,
-        rng: np.random.Generator=np.random.default_rng(),
+        rng: np.random.Generator = np.random.default_rng(),
     ):
-        """ Intialize the state of the problem. """
+        """Intialize the state of the problem."""
         self.K = K
         self.rng = rng
 
@@ -32,4 +39,3 @@ class RandomProblem(Problem):
     is_winner = is_copeland_winner
 
     shuffle = shuffle_matrix
-

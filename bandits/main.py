@@ -1,9 +1,10 @@
 from functools import partial
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
-from bandit import problems, algorithms
+from bandit import algorithms, problems
 
 # TODO: heatmap of picks and regret over time per problem, all algorithms
 
@@ -12,7 +13,7 @@ sns.set_theme(context="paper", style="darkgrid")
 
 rng = np.random.default_rng(1)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     K = 10
     Ts = [*np.arange(1, 1000, 100)]
     # Ts = [*np.arange(1, 1000, 100), 10_000, 20_000, 40_000, 80_000]
@@ -85,4 +86,3 @@ if __name__ == '__main__':
         kind="line",
     )
     plt.savefig("figures/winner.png")
-

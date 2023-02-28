@@ -7,7 +7,7 @@ from jux.actions import FactoryAction, JuxAction, UnitAction, UnitActionType
 from jux.map.position import Direction
 from jux.state import State as JuxState
 from jux.unit_cargo import ResourceType
-from jux.utils import INT8_MAX
+from jux.utils import INT8_MAX, INT16_MAX
 from scipy.optimize import linprog
 from scipy.sparse import coo_array
 
@@ -107,45 +107,50 @@ directions = np.array(
 
 
 def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray):
-    ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
-    for team in range(2):
-        n = state.n_units[team]
-        unit_pos = np.asarray(state.units.pos.pos[team, :n])  # N, 2
-        assert unit_pos.shape == (n, 2)
+    try:
+        ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
+        for team in range(2):
+            n = state.n_units[team]
+            if n == 0:
+                continue
+            unit_pos = np.asarray(state.units.pos.pos[team, :n])  # N, 2
+            assert unit_pos.shape == (n, 2)
 
-        scores = resulting_pos_scores[team, :n]  # N, 5
+            scores = resulting_pos_scores[team, :n]  # N, 5
 
-        c = scores.ravel()
-        if team == 1:
-            c = c * -1
+            c = scores.ravel()
+            if team == 1:
+                c = c * -1
 
-        destinations = unit_pos[:, None] + directions  # N, 5, 2
-        in_bounds = (
-            (0 <= destinations[..., 0])
-            & (destinations[..., 0] < 48)
-            & (0 <= destinations[..., 1])
-            & (destinations[..., 1] < 48)
-        )  # N, 5 boolean arr
-        flat_idx = 48 * destinations[..., 0] + destinations[..., 1]  # N, 5
+            destinations = unit_pos[:, None] + directions  # N, 5, 2
+            in_bounds = (
+                (0 <= destinations[..., 0])
+                & (destinations[..., 0] < 48)
+                & (0 <= destinations[..., 1])
+                & (destinations[..., 1] < 48)
+            )  # N, 5 boolean arr
+            flat_idx = 48 * destinations[..., 0] + destinations[..., 1]  # N, 5
 
-        a_lt = coo_array(
-            (
-                np.ones(in_bounds.sum()),
-                (flat_idx[in_bounds], np.arange(5 * n)[in_bounds.ravel()]),
-            ),
-            shape=(48 * 48, 5 * n),
-        )
-        b_lt = np.ones(48 * 48)
+            a_lt = coo_array(
+                (
+                    np.ones(in_bounds.sum()),
+                    (flat_idx[in_bounds], np.arange(5 * n)[in_bounds.ravel()]),
+                ),
+                shape=(48 * 48, 5 * n),
+            )
+            b_lt = np.ones(48 * 48)
 
-        i = np.arange(n).repeat(5)
-        j = np.arange(5 * n)
-        a_eq = coo_array((np.ones(5 * n), (i, j)))
-        b_eq = np.ones(n)
+            i = np.arange(n).repeat(5)[in_bounds.ravel()]
+            j = np.arange(5 * n)[in_bounds.ravel()]
+            a_eq = coo_array((np.ones(i.shape), (i, j)), shape=(n, 5 * n))
+            b_eq = np.ones(n)
 
-        result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
-        coeffs = result.x.reshape(scores.shape)
-        ret[team, np.arange(n)] = np.argmax(coeffs, axis=1)
-    return ret
+            result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
+            coeffs = result.x.reshape(scores.shape)
+            ret[team, np.arange(n)] = np.argmax(coeffs, axis=1)
+        return ret
+    except AttributeError:
+        breakpoint()
 
 
 @jax.jit
@@ -163,45 +168,48 @@ def step_best(state: JuxState, action_scores: JaxArray):
 
     # heuristic factory behavior: simply build light robots when possible
     factory_action = jnp.where(
-        (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
-        FactoryAction.BUILD_LIGHT,
-        FactoryAction.DO_NOTHING,
-    )
+        (state.factories.cargo.metal >= 10)
+        & (state.factories.power >= 100)
+        & (
+            state.board.units_map[state.factories.pos.x, state.factories.pos.y]
+            == INT16_MAX
+        ),
+        int(FactoryAction.BUILD_LIGHT),
+        int(FactoryAction.DO_NOTHING),
+    ).astype(jnp.int8)
 
     # reconstruct non-movement actions
-    action_types = jnp.full(
-        (2, 1000, 20), fill_value=UnitActionType.DO_NOTHING, dtype=jnp.int8
+    action_types = jnp.zeros((2, 1000, 20), dtype=jnp.int8)
+    action_types = action_types.at[..., 0].set(
+        jnp.where(dig_best, int(UnitActionType.DIG), action_types[..., 0])
     )
     action_types = action_types.at[..., 0].set(
-        jnp.where(dig_best, UnitActionType.DIG, action_types[..., 0])
-    )
-    action_types = action_types.at[..., 0].set(
-        jnp.where(dropoff_best, UnitActionType.TRANSFER, action_types[..., 0])
+        jnp.where(dropoff_best, int(UnitActionType.TRANSFER), action_types[..., 0])
     )
     action_types = action_types.at[..., 0].set(
         jnp.where(
             (1 <= selected_idx) & (selected_idx <= 4),
-            UnitActionType.MOVE,
+            int(UnitActionType.MOVE),
             action_types[..., 0],
         )
     )
     direction = jnp.zeros((2, 1000, 20), dtype=jnp.int8)
     direction = direction.at[..., 0].set(
-        jnp.where(selected_idx == 1, Direction.UP, direction[..., 0])
+        jnp.where(selected_idx == 1, int(Direction.UP), direction[..., 0])
     )
     direction = direction.at[..., 0].set(
-        jnp.where(selected_idx == 2, Direction.RIGHT, direction[..., 0])
+        jnp.where(selected_idx == 2, int(Direction.RIGHT), direction[..., 0])
     )
     direction = direction.at[..., 0].set(
-        jnp.where(selected_idx == 3, Direction.DOWN, direction[..., 0])
+        jnp.where(selected_idx == 3, int(Direction.DOWN), direction[..., 0])
     )
     direction = direction.at[..., 0].set(
-        jnp.where(selected_idx == 4, Direction.LEFT, direction[..., 0])
+        jnp.where(selected_idx == 4, int(Direction.LEFT), direction[..., 0])
     )
 
     resource_type = jnp.full((2, 1000, 20), fill_value=ResourceType.ice, dtype=jnp.int8)
     amount = jnp.zeros((2, 1000, 20), dtype=jnp.int16)
-    amount = amount.at[..., 0].set(state.units.cargo.ice)
+    amount = amount.at[..., 0].set(state.units.cargo.ice.astype(jnp.int16))
     repeat = jnp.ones((2, 1000, 20), dtype=jnp.int16)
     n = jnp.ones((2, 1000, 20), dtype=jnp.int16)
 
@@ -215,7 +223,11 @@ def step_best(state: JuxState, action_scores: JaxArray):
     )
 
     unit_action_queue_count = jnp.ones((2, 1000), dtype=jnp.int8)
-    unit_action_queue_update = jnp.ones((2, 1000), dtype=jnp.bool_)
+    unit_action_queue_update = jnp.zeros((2, 1000), dtype=jnp.bool_)
+    for team in range(2):
+        unit_action_queue_update = unit_action_queue_update.at[team].set(
+            jnp.where(jnp.arange(1000) < state.n_units[team], True, False)
+        )
 
     action = JuxAction(
         factory_action=factory_action,

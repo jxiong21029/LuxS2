@@ -1,18 +1,14 @@
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
-import numpy as np
-from jux.actions import (
-    ActionQueue,
-    FactoryAction,
-    JuxAction,
-    UnitAction,
-    UnitActionType,
-)
-from jux.config import EnvConfig, JuxBufferConfig
+import matplotlib.pyplot as plt
+import tqdm
+from jux.actions import bid_action_from_lux, factory_placement_action_from_lux
 from jux.env import JuxEnv
 from jux.state import State as JuxState
-from jux.utils import INT8_MAX, INT16_MAX, load_replay
+from jux.utils import load_replay
+
+from env.action_handling import step_best
 
 
 # TODO: observations should include the units' action queues (in this case, simply the
@@ -50,75 +46,6 @@ def state_to_obs(state: JuxState):
     return ret
 
 
-# handles actions for both teams
-@jax.jit
-def action_arr_to_jux(
-    state: JuxState, action_arr: jax.Array, env_cfg, buf_cfg
-) -> JuxAction:
-    batch_shape = (
-        2,
-        buf_cfg.MAX_N_UNITS,
-        env_cfg.UNIT_ACTION_QUEUE_SIZE,
-    )
-
-    # heuristic factory behavior:
-    # if have 10 metal / 100 power: build light
-    # else: do nothing
-    factory_action = jnp.where(
-        (state.factories.cargo.metal >= 10) & (state.factories.power >= 100),
-        FactoryAction.BUILD_LIGHT,
-        FactoryAction.DO_NOTHING,
-    )
-
-    # Six unit actions: idle + 4 directions + interact
-    # action_arr is an int8[HW]
-
-    unit_mask = state.board.units_map != INT16_MAX
-
-    unit_idxs = state.unit_id2idx.at[state.board.units_map].get(
-        mode="fill", fill_value=INT16_MAX
-    )
-
-    interact_mask = unit_mask & (action_arr == 0)
-    factory_interact_mask = interact_mask & (
-        state.board.factory_occupancy_map != INT8_MAX
-    )
-    dig_mask = interact_mask & (
-        state.board.ice | state.board.ore | (state.board.lichen > 0)
-    )
-
-    # [2, MAX_N_UNITS,  UNIT_ACTION_QUEUE_SIZE]
-    action_types = jnp.full(batch_shape, fill_value=UnitActionType.DO_NOTHING)
-    action_types = action_types.at[
-        jnp.where(
-            (action_arr == 5)
-            & (
-                state.board.ice
-                | state.board.ore
-                | (state.board.rubble > 0)
-                | (state.board.lichen > 0)
-            ),
-            unit_idxs,
-            INT16_MAX,
-        )
-    ].set(UnitActionType.DIG, mode="drop")
-
-    unit_action_queue = UnitAction(
-        action_type=None,
-        direction=None,
-        resource_type=None,
-        amount=None,
-        repeat=None,
-        n=None,
-    )
-
-    JuxAction()
-
-    # ret = JuxAction(
-    #     factory_action=,
-    # )
-
-
 class QNet(nn.Module):
     # returns predicted Q-values (for each agent)
     # current plan is do things VDN-style and just sum the local Q-values
@@ -135,8 +62,31 @@ def main():
         f"https://www.kaggleusercontent.com/episodes/{46215591}.json"
     )
     jux_env, state = JuxEnv.from_lux(lux_env)
-    obs = state_to_obs(state)
-    action_arr_to_jux(state, jnp.zeros(2))
+    lux_act = next(lux_actions)
+    bid, faction = bid_action_from_lux(lux_act)
+    state, _ = jux_env.step_bid(state, bid, faction)
+    while state.real_env_steps < 0:
+        lux_act = next(lux_actions)
+        spawn, water, metal = factory_placement_action_from_lux(lux_act)
+        state, _ = jux_env.step_factory_placement(state, spawn, water, metal)
+
+    model = QNet()
+
+    key = jax.random.PRNGKey(42)
+    params = model.init(key, state_to_obs(state))
+
+    for i in tqdm.trange(1000):
+        action_values = model.apply(params, state_to_obs(state))
+        state: JuxState = step_best(state, action_values)
+
+        img = jux_env.render(state, mode="rgb_array")
+        fig, ax = plt.subplots(constrained_layout=True)
+        fig: plt.Figure
+        ax: plt.Axes
+        ax.axis("off")
+        ax.imshow(img)
+        fig.savefig(f"images/frame_{i:>03}")
+        plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,6 @@ from scipy.optimize import linprog
 from scipy.sparse import coo_array
 
 
-@jax.jit
 def get_dig_mask(state: JuxState):
     unit_x, unit_y = state.units.pos.x, state.units.pos.y  # (2, U)
 
@@ -36,7 +35,6 @@ def get_dig_mask(state: JuxState):
     return dig_mask
 
 
-@jax.jit
 def position_scores(state: JuxState, action_scores: JaxArray):
     """
     Q predictions for each action -> max Q prediction for each resulting position
@@ -165,7 +163,6 @@ def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray)
     return ret
 
 
-@jax.jit
 def step_best(state: JuxState, action_scores: JaxArray):
     chex.assert_shape(action_scores, (48, 48, 7))
 

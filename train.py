@@ -3,11 +3,11 @@ from functools import partial
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+import rlax
 from flax.training.train_state import TrainState
 from jux.config import EnvConfig, JuxBufferConfig
-from jux.state import State as JuxState
 from jux.env import JuxEnv
-import rlax
+from jux.state import State as JuxState
 
 from action_selection import step_best
 from observation import get_obs

@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 from jux.actions import (
     JuxAction,
@@ -49,7 +48,10 @@ def test_dig_mask(sample_state):
         assert jnp.all(~dig_mask[sample_state.n_units[team] :])
 
         for i in range(sample_state.n_units[team]):
-            x, y = sample_state.units.pos.x[team, i], sample_state.units.pos.y[team, i]
+            x, y = (
+                sample_state.units.pos.x[team, i],
+                sample_state.units.pos.y[team, i],
+            )
             can_dig = (
                 sample_state.board.ice[x, y]
                 | sample_state.board.ore[x, y]
@@ -71,7 +73,9 @@ def test_resulting_pos_scores(sample_state):
         assert not jnp.any(dropoff_best[team, n:])
 
         assert not jnp.any(dig_best & dropoff_best)
-        assert jnp.all(~(dig_best | dropoff_best) | (jnp.argmax(scores, axis=2) == 0))
+        assert jnp.all(
+            ~(dig_best | dropoff_best) | (jnp.argmax(scores, axis=2) == 0)
+        )
 
 
 def test_action_maximization(sample_state):

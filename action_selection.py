@@ -15,9 +15,16 @@ from scipy.sparse import coo_array
 def get_dig_mask(state: JuxState):
     unit_x, unit_y = state.units.pos.x, state.units.pos.y  # (2, U)
 
-    on_ice = state.board.ice.at[unit_x, unit_y].get(mode="fill", fill_value=False)
-    on_ore = state.board.ore.at[unit_x, unit_y].get(mode="fill", fill_value=False)
-    on_rubble = state.board.rubble.at[unit_x, unit_y].get(mode="fill", fill_value=0) > 0
+    on_ice = state.board.ice.at[unit_x, unit_y].get(
+        mode="fill", fill_value=False
+    )
+    on_ore = state.board.ore.at[unit_x, unit_y].get(
+        mode="fill", fill_value=False
+    )
+    on_rubble = (
+        state.board.rubble.at[unit_x, unit_y].get(mode="fill", fill_value=0)
+        > 0
+    )
 
     lichen_strains = state.board.lichen_strains.at[unit_x, unit_y].get(
         mode="fill", fill_value=INT8_MAX
@@ -28,7 +35,8 @@ def get_dig_mask(state: JuxState):
     on_opponent_lichen = lichen_team == jnp.array([[1], [0]])
 
     chex.assert_shape(
-        [unit_x, unit_y, on_ice, on_ore, on_rubble, on_opponent_lichen], (2, 1000)
+        [unit_x, unit_y, on_ice, on_ore, on_rubble, on_opponent_lichen],
+        (2, 1000),
     )
 
     dig_mask = on_ice | on_ore | on_rubble | on_opponent_lichen
@@ -37,7 +45,7 @@ def get_dig_mask(state: JuxState):
 
 def position_scores(state: JuxState, action_scores: JaxArray):
     """
-    Q predictions for each action -> max Q prediction for each resulting position
+    Q predictions for each action -> max Q for each resulting position
 
     action_scores (48, 48, 7)
         0: idle
@@ -104,13 +112,17 @@ directions = np.array(
 )
 
 
-def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray):
+def maximize_actions_callback(
+    state: JuxState, resulting_pos_scores: np.ndarray
+):
     ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
     for team in range(2):
         n = state.n_units[team]
         if n == 0:
             continue
-        unit_pos = np.asarray(state.units.pos.pos[team, :n], dtype=np.int64)  # N, 2
+        unit_pos = np.asarray(
+            state.units.pos.pos[team, :n], dtype=np.int64
+        )  # N, 2
         assert unit_pos.shape == (n, 2)
 
         scores = resulting_pos_scores[team, :n]  # N, 5
@@ -125,10 +137,12 @@ def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray)
             & (destinations[..., 0] < 48)
             & (0 <= destinations[..., 1])
             & (destinations[..., 1] < 48)
-        ).ravel()  # (N*5,) boolean arr -- for each move, bool (whether in bounds)
+        ).ravel()  # (N*5,) boolean arr -- for each move, bool for in bounds
 
-        flat_idx = (48 * destinations[..., 0] + destinations[..., 1]).ravel()  # (N*5,)
-        # for each move, int in [0, 48^2) -- flattened index on board of destination
+        flat_idx = (
+            48 * destinations[..., 0] + destinations[..., 1]
+        ).ravel()  # (N*5,)
+        # for each move, int in [0, 48^2) -- flattened index of destination
 
         a_lt = coo_array(
             (
@@ -147,9 +161,14 @@ def maximize_actions_callback(state: JuxState, resulting_pos_scores: np.ndarray)
                 np.ones(5 * n + num_oob),
                 (
                     np.concatenate(
-                        [np.arange(n).repeat(5), np.full(num_oob, fill_value=5 * n)]
+                        [
+                            np.arange(n).repeat(5),
+                            np.full(num_oob, fill_value=5 * n),
+                        ]
                     ),
-                    np.concatenate([np.arange(5 * n), (~in_bounds).nonzero()[0]]),
+                    np.concatenate(
+                        [np.arange(5 * n), (~in_bounds).nonzero()[0]]
+                    ),
                 ),
             ),
             shape=(n + 1, 5 * n),
@@ -193,7 +212,9 @@ def step_best(state: JuxState, action_scores: JaxArray):
         jnp.where(dig_best, int(UnitActionType.DIG), action_types[..., 0])
     )
     action_types = action_types.at[..., 0].set(
-        jnp.where(dropoff_best, int(UnitActionType.TRANSFER), action_types[..., 0])
+        jnp.where(
+            dropoff_best, int(UnitActionType.TRANSFER), action_types[..., 0]
+        )
     )
     action_types = action_types.at[..., 0].set(
         jnp.where(
@@ -216,7 +237,9 @@ def step_best(state: JuxState, action_scores: JaxArray):
         jnp.where(selected_idx == 4, int(Direction.LEFT), direction[..., 0])
     )
 
-    resource_type = jnp.full((2, 1000, 20), fill_value=ResourceType.ice, dtype=jnp.int8)
+    resource_type = jnp.full(
+        (2, 1000, 20), fill_value=ResourceType.ice, dtype=jnp.int8
+    )
     amount = jnp.zeros((2, 1000, 20), dtype=jnp.int16)
     amount = amount.at[..., 0].set(state.units.cargo.ice.astype(jnp.int16))
     repeat = jnp.ones((2, 1000, 20), dtype=jnp.int16)

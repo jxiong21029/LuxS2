@@ -70,11 +70,15 @@ def d_ts(
         total = B + B.T
         mask = total != 0
         U = np.zeros((K, K))
-        U[mask] = B[mask] / total[mask] + np.sqrt(alpha * np.log(t) / total[mask])
+        U[mask] = B[mask] / total[mask] + np.sqrt(
+            alpha * np.log(t) / total[mask]
+        )
         # x/0 := 1 for all x
         U[~mask] = 2
         L = np.zeros((K, K))
-        L[mask] = B[mask] / total[mask] - np.sqrt(alpha * np.log(t) / total[mask])
+        L[mask] = B[mask] / total[mask] - np.sqrt(
+            alpha * np.log(t) / total[mask]
+        )
         L[~mask] = 0
         # u_ii = l_ii = 1/2
         np.fill_diagonal(U, 0.5)
@@ -108,7 +112,12 @@ def d_ts(
 
 def learning_rate(t: int, rv: bool) -> float:
     """Return the learning rate (theorem 1 of [8])."""
-    return 4 * np.sqrt(1 / t) if rv else 2 * np.sqrt(1 / t)
+    # fmt: off
+    return (
+        4*np.sqrt(1/t) if rv else
+        2*np.sqrt(1/t)
+    )
+    # fmt: on
 
 
 def omd_w(x: float, losses: np.ndarray, lr: float) -> tuple[np.ndarray, float]:
@@ -172,7 +181,12 @@ def loss_estimator(loss: float, w: float, lr: float, rv: bool):
     These estimators are an unbiased estimate for the loss.
     """
     b = 1 / 2 * (w >= lr**2)
-    return (loss - b) / w + b if rv else loss / w
+    # fmt: off
+    return (
+        (loss - b)/w + b if rv else
+        loss/w
+    )
+    # fmt: on
 
 
 def omd_newton(

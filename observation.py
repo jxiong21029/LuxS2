@@ -25,12 +25,16 @@ def get_obs(state: JuxState):
         unit_y = state.units.pos.y[team]
         cargo_ice = state.units.cargo.ice[team]
         ret = ret.at[unit_x, unit_y, 3 + team].set(1, mode="drop")
-        ret = ret.at[unit_x, unit_y, 5 + team].set(cargo_ice / 100, mode="drop")
+        ret = ret.at[unit_x, unit_y, 5 + team].set(
+            cargo_ice / 100, mode="drop"
+        )
 
         # factory: occupancy, [center, cargo: ice, ore, water, metal; lichen connected]
         # separate obs for ally and enemy
         factory_occp_x = state.factories.occupancy.x[team]
         factory_occp_y = state.factories.occupancy.y[team]
-        ret = ret.at[factory_occp_x, factory_occp_y, 7 + team].set(1, mode="drop")
+        ret = ret.at[factory_occp_x, factory_occp_y, 7 + team].set(
+            1, mode="drop"
+        )
 
     return ret

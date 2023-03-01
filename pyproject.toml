@@ -1,2 +1,30 @@
+[tool.poetry]
+name = "dueling bandits"
+version = "0.1.0"
+description = ""
+authors = ["Stephen Huan <shuan@gatech.edu>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+numpy = "^1.24.2"
+seaborn = "^0.12.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pyright]
+exclude = [".venv"]
+venvPath = "."
+venv = ".venv"
+
+[tool.ruff]
+line-length = 79
+
 [tool.black]
 line-length = 79
+
+[tool.isort]
+profile = "black"
+line_length = 79

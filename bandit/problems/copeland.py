@@ -24,9 +24,9 @@ class CopelandProblem(Problem):
         self.rng = rng
 
         # brute-force sample until satisfied
-        get_matrix = lambda: (
+        get_matrix = lambda: (  # noqa: E731
             RandomProblem(K, rng).preference_matrix()
-        )  # noqa: E731
+        )
         self.p = get_matrix()
         while len(copeland_winners(self.p)) > 1:
             self.p = get_matrix()

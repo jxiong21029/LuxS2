@@ -33,7 +33,6 @@ import numpy as np
 from . import utils
 from .utils import Arm, Duel
 
-# TODO: dts+
 # TODO: beat the mean
 # TODO: copeland dueling bandits (scb)
 
@@ -56,11 +55,33 @@ def naive(K: int, duel: Duel, T: int) -> Arm:
 # Double Thompson Sampling ([6])
 
 
+def d_ts_plus(theta: np.ndarray) -> Arm:
+    """Return the arm that minimizes regret (corollary 1 of [6])."""
+    scores = utils.copeland_scores(theta)
+    score = np.max(scores)
+    winners = utils.copeland_winners(theta)
+
+    def loss(i: Arm, j: Arm) -> float:
+        """Loss of comparing arm i to arm j."""
+        return score - (scores[i] + scores[j]) / 2
+
+    def regret(i: Arm) -> float:
+        """Expected regret of using i as the first candidate."""
+        return sum(
+            loss(i, j) / utils.d_kl(theta[i, j], 0.5)
+            for j in range(theta.shape[0])
+            if theta[i, j] != 0.5
+        )
+
+    return min(winners, key=regret)
+
+
 def d_ts(
     K: int,
     duel: Duel,
     T: int,
     alpha: float,
+    plus: bool = True,
     rng: np.random.Generator = np.random.default_rng(),
 ) -> Arm:
     """The Double Thompson Sampling (D-TS) algorithm 1 of [6]."""
@@ -93,8 +114,11 @@ def d_ts(
         theta[lower] -= 1
         np.fill_diagonal(theta, 0.5)
         # choose only from C to eliminate non-winner arms; break ties randomly
-        rng.shuffle(C)
-        arm1 = C[np.argmax(utils.copeland_scores(theta)[C])]
+        if not plus:
+            rng.shuffle(C)
+            arm1 = C[np.argmax(utils.copeland_scores(theta)[C])]
+        else:
+            arm1 = d_ts_plus(theta)
         # phase 2: choose the second candidate
         theta2 = rng.beta(B[:, arm1] + 1, B[arm1, :] + 1)
         theta2[arm1] = 0.5

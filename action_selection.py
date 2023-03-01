@@ -267,4 +267,8 @@ def step_best(state: JuxState, action_scores: JaxArray):
         unit_action_queue_count=unit_action_queue_count,
         unit_action_queue_update=unit_action_queue_update,
     )
-    return state._step_late_game(action)
+
+    selected_actions = jnp.where(dig_best, 5, selected_idx)
+    selected_actions = jnp.where(dropoff_best, 6, selected_actions)
+
+    return state._step_late_game(action), selected_actions

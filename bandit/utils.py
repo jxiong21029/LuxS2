@@ -40,12 +40,17 @@ def count_history(history: History) -> dict[Arm, int]:
 
 def d_kl(p: float, q: float) -> float:
     """Kullback-Leibler (KL) divergence between Bernoulli distributions."""
-    # fmt: off
-    return (
-        p  * (np.log(p) - np.log(q)) +
-        (1 - p) * (np.log1p(-p) - np.log1p(-q))
-    )
-    # fmt: on
+    if p == 0:
+        return -np.log1p(-q)
+    elif p == 1:
+        return -np.log(q)
+    else:
+        # fmt: off
+        return (
+            p  * (np.log(p) - np.log(q)) +
+            (1 - p) * (np.log1p(-p) - np.log1p(-q))
+        )
+        # fmt: on
 
 
 # Copeland functions (see [9, 4, 6])

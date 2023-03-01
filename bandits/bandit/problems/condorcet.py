@@ -24,12 +24,12 @@ class CondorcetProblem(Problem):
 
         p = base.preference_matrix()
         rest = rng.uniform(0.5, 1, (base.K, 1))
-        self.p = np.block(
-            [
-                [0.5, rest.T],
-                [1 - rest, p],
-            ]
-        )  # type: ignore
+        # fmt: off
+        self.p = np.block([
+            [0.5, rest.T],
+            [1 - rest, p],
+        ])  # type: ignore
+        # fmt: on
         # avoid Condorcet winner always placed first
         self.shuffle()
 

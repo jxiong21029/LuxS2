@@ -28,12 +28,13 @@ See the following references (not all of these are currently implemented):
     "Copeland Dueling Bandits." arXiv, May 2015. doi:
     [10.48550/arXiv.1506.00312](https://doi.org/10.48550/arXiv.1506.00312).
 """
+from typing import Callable
+
 import numpy as np
 
 from . import utils
 from .utils import Arm, Duel
 
-# TODO: beat the mean
 # TODO: copeland dueling bandits (scb)
 
 
@@ -50,6 +51,104 @@ def naive(K: int, duel: Duel, T: int) -> Arm:
         winner, loser = (arm1, arm2) if duel(arm1, arm2) else (arm2, arm1)
         wins[winner, loser] += 1
     return utils.copeland_winner_wins(wins)
+
+
+# Beat the Mean Bandit ([7])
+
+
+def argmin_tiebreak(
+    scores: list,
+    rng: np.random.Generator = np.random.default_rng(),
+) -> Arm:
+    """Return the argmin of the score array, breaking ties randomly."""
+    candidates = np.arange(len(scores))[scores == np.min(scores)]
+    return rng.choice(candidates)
+
+
+def btm(
+    K: int,
+    duel: Duel,
+    T: int,
+    c: Callable[[int], float],
+    N: float = float("inf"),
+    rng: np.random.Generator = np.random.default_rng(),
+) -> tuple[Arm, int]:
+    """The Beat the Mean Bandit (BTM) algorithm 1 of [7]."""
+    W = list(range(K))
+
+    def get_pb(
+        W: list[int],
+        nums: dict[int, list[int]],
+        wins: dict[int, list[int]],
+    ) -> list[float]:
+        """Get the empirical probabilities."""
+        return [
+            len(wins[b]) / len(nums[b]) if len(nums[b]) != 0 else 0.5
+            for b in W
+        ]
+
+    def remove(x: list[int], b: int) -> list[int]:
+        """Remove b from the list x."""
+        return [v for v in x if v != b]
+
+    nums = {b: [] for b in W}
+    wins = {b: [] for b in W}
+    n_best = 0
+    c_best = 1
+    t = 0
+    while len(W) > 1 and t < T and n_best < N:
+        # break ties randomly
+        b = W[argmin_tiebreak([len(nums[b]) for b in W], rng)]
+        # select b' randomly, compare b and b'
+        bp = rng.choice(W)
+        if duel(b, bp):
+            wins[b].append(bp)
+        nums[b].append(bp)
+        t += 1
+        n_best = min(map(len, nums.values()))
+        c_best = c(n_best) if n_best != 0 else 1
+        pb = get_pb(W, nums, wins)
+        if np.min(pb) + c_best <= np.max(pb) - c_best:
+            bp = W[argmin_tiebreak(pb, rng)]
+            # remove comparisons with b'
+            for b in W:
+                wins[b] = remove(wins[b], bp)
+                nums[b] = remove(nums[b], bp)
+            del wins[bp]
+            del nums[bp]
+            # update working set
+            W = remove(W, bp)
+    pb = get_pb(W, nums, wins)
+    return W[np.argmax(pb)], t
+
+
+def btm_online(
+    K: int,
+    duel: Duel,
+    T: int,
+    gamma: float = 1,
+    rng: np.random.Generator = np.random.default_rng(),
+) -> Arm:
+    """The Beat the Mean (online) algorithm 2 of [7]."""
+    delta = 1 / (2 * T * K)
+    if gamma != 1:
+
+        def c(n: int) -> float:
+            """Confidence bound for the online setting in equation (4)."""
+            return 3 * gamma**2 * np.sqrt(-np.log(delta) / n)
+
+    else:
+
+        def c(n: int) -> float:
+            """Tighter confidence bound when gamma = 1 in equation (9)."""
+            return np.sqrt(-np.log(delta) / n)
+
+    # explore
+    b, t = btm(K, duel, T, c, rng=rng)
+    # exploit
+    for _ in range(T - t):
+        duel(b, b)
+    return b
 
 
 # Double Thompson Sampling ([6])

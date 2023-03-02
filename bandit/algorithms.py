@@ -286,7 +286,9 @@ def d_ts(
     K: int,
     duel: Duel,
     T: int,
-    alpha: float,
+    # [6] proves with alpha = 0.5 (theorem 1) and uses alpha = 0.51 (section 5)
+    # [5] recommends alpha = 0.6 in section 7
+    alpha: float = 0.51,
     plus: bool = True,
     rng: np.random.Generator = np.random.default_rng(),
 ) -> Arm:
@@ -315,7 +317,7 @@ def d_ts(
         # sample from beta distribution
         lower = np.tril_indices(n=K, k=-1)
         theta = np.zeros((K, K))
-        theta[lower] = rng.beta(B + 1, B.T + 1)[lower]
+        theta[lower] = rng.beta(B[lower] + 1, B.T[lower] + 1)
         theta = theta + (1 - theta.T)
         theta[lower] -= 1
         np.fill_diagonal(theta, 0.5)

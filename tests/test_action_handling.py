@@ -9,7 +9,7 @@ from jux.actions import (
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from action_selection import (
+from action_handling import (
     get_dig_mask,
     maximize_actions_callback,
     position_scores,

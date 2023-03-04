@@ -271,4 +271,14 @@ def step_best(state: JuxState, action_scores: JaxArray):
     selected_actions = jnp.where(dig_best, 5, selected_idx)
     selected_actions = jnp.where(dropoff_best, 6, selected_actions)
 
-    return state._step_late_game(action), selected_actions
+    new_state = state._step_late_game(action)
+
+    old_potential = state.n_units[0] - state.n_units[1]
+    new_potential = new_state.n_units[0] - new_state.n_units[1]
+    reward = new_potential - old_potential
+
+    done = (new_state.n_factories == 0).any() | (
+        new_state.real_env_steps >= 1000
+    )
+
+    return new_state, selected_actions, reward, done

@@ -6,13 +6,12 @@ import flax.linen as nn
 import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
-from jux.config import EnvConfig, JuxBufferConfig
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 from jux.utils import INT16_MAX
 from rlax import lambda_returns
 
-from action_selection import step_best
+from action_handling import step_best
 from observation import get_obs
 
 
@@ -25,9 +24,6 @@ class QNet(nn.Module):
         x = nn.relu(x)
         x = nn.Conv(7, kernel_size=(1, 1))(x)
         return x
-
-
-model = QNet()
 
 
 class Rollout(NamedTuple):
@@ -50,9 +46,12 @@ def choose_factory_spawn(rng, state: JuxState):
 
 
 class Trainer:
-    def __init__(self, env, gamma=0.99, lam=0.9, rollout_length=16):
+    def __init__(
+        self, env: JuxEnv, model, gamma=0.99, lam=0.9, rollout_length=16
+    ):
         self.env = env
         self.gamma = gamma
+        self.model = model
         self.lam = lam
         self.rollout_length = rollout_length
 
@@ -60,9 +59,10 @@ class Trainer:
     def td_loss(self, params, slow_params, rollout: Rollout):
         all_obs = jax.vmap(get_obs)(rollout.states)
         # B, H, W, C
-        utility = model.apply(params, all_obs)
-        utility_slow = model.apply(slow_params, all_obs)
+        utility = self.model.apply(params, all_obs)
+        utility_slow = self.model.apply(slow_params, all_obs)
 
+        # TODO: rollout actions shape should be (batch dim, MAX_N_UNITS)
         units_mask = rollout.states.board.units_map < INT16_MAX
         selected_utility = jnp.take_along_axis(
             utility * units_mask, rollout.actions[..., None]
@@ -110,43 +110,98 @@ class Trainer:
         rng, key = jax.random.split(rng)
         _, state = jax.lax.fori_loop(
             0,
-            state.board.factories_per_team,
+            state.board.factories_per_team.astype(jnp.int32),
             step_factory_placement,
             (key, state),
         )
+        return state
 
     @partial(jax.jit, static_argnums=0)
-    def collect_rollout(
-        self, rng, params, start_state: JuxState, action_noise
-    ):
+    def collect_rollout(self, rng, params, start_state: JuxState):
         rollout_states: JuxState = jax.tree_util.tree_map(
             lambda x: jnp.zeros((self.rollout_length,) + x.shape, x.dtype),
             start_state,
         )
-        rollout_actions = jnp.zeros(())
-
-        curr_state = start_state
-        for i in range(self.rollout_length):
-            rollout_states = jax.tree_util.tree_map(
-                lambda x, y: x.at[i].set(y), rollout_states, curr_state
-            )
-
-            utility = model.apply(params, get_obs(curr_state))
-            curr_state, actions = step_best(curr_state, utility)
-
-            # TODO: reset terminated environments (...or don't)
-            done = (curr_state.n_factories == 0).any() | (
-                curr_state.real_env_steps >= 1000
-            )
-
-            def get_fresh_state(rng_):
-                rng_, key_ = jax.random.split(rng_)
-                return rng_, self.fresh_state(rng)
-
-            rng, curr_state = jax.lax.cond(
-                done, get_fresh_state, (lambda _rng: _rng, curr_state), rng
-            )
-        return Rollout(
-            states=rollout_states,
-            actions=
+        rollout_actions = jnp.zeros(
+            (self.rollout_length, 2, self.env.buf_cfg.MAX_N_UNITS)
         )
+        rollout_rewards = jnp.zeros(self.rollout_length)
+        rollout_terminal = jnp.zeros(self.rollout_length, dtype=jnp.bool_)
+
+        def update(i, args):
+            (
+                rng_,
+                state_,
+                rollout_states_,
+                rollout_actions_,
+                rollout_rewards_,
+                rollout_terminal_,
+            ) = args
+            rollout_states_ = jax.tree_util.tree_map(
+                lambda x, y: x.at[i].set(y), rollout_states_, state_
+            )
+
+            utility = self.model.apply(params, get_obs(state_))
+            state_, actions, reward, done = step_best(state_, utility)
+
+            rollout_actions_ = rollout_actions_.at[i].set(actions)
+            rollout_rewards_ = rollout_rewards_.at[i].set(reward)
+            rollout_terminal_ = rollout_terminal_.at[i].set(done)
+
+            rng_, key_ = jax.random.split(rng_)
+            fresh_state = self.fresh_state(key_)
+            state_ = jax.tree_map(
+                lambda x, y: jnp.where(done, x, y), fresh_state, state_
+            )
+            return (
+                rng_,
+                state_,
+                rollout_states_,
+                rollout_actions_,
+                rollout_rewards_,
+                rollout_terminal_,
+            )
+
+        state = start_state
+        (
+            _, _,
+            rollout_states,
+            rollout_actions,
+            rollout_rewards,
+            rollout_terminal,
+        ) = jax.lax.fori_loop(
+            0,
+            self.rollout_length,
+            update,
+            (
+                rng,
+                state,
+                rollout_states,
+                rollout_actions,
+                rollout_rewards,
+                rollout_terminal,
+            ),
+        )
+
+        return (
+            rollout_states,
+            rollout_actions,
+            rollout_rewards,
+            rollout_terminal,
+        )
+
+
+def main():
+    rng = jax.random.PRNGKey(42)
+    rng, key = jax.random.split(rng)
+
+    dummy_state = JuxEnv().reset(0)
+    model = QNet()
+    params = model.init(key, get_obs(dummy_state))
+
+    trainer = Trainer(JuxEnv(), model)
+    rollout = trainer.collect_rollout(rng, params, start_state=dummy_state)
+
+
+if __name__ == "__main__":
+    main()

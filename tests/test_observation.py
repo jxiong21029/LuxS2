@@ -10,7 +10,7 @@ from observation import get_obs
 
 
 def test_obs_smoke():
-    lux_env, lux_actions = load_replay("tests/test_replay.json")
+    lux_env, lux_actions = load_replay("tests/sample_replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
     get_obs(state)
 

@@ -1,5 +1,4 @@
 from functools import partial
-from typing import NamedTuple
 
 import chex
 import flax.linen as nn
@@ -26,14 +25,14 @@ class QNet(nn.Module):
         return x
 
 
-class Rollout(NamedTuple):
-    states: JuxState  # BATCH of states, s_t, for s in 1, ..., T+1
-    actions: jax.Array  # BATCH of actions, a_t
-    rewards: jax.Array  # BATCH of rewards received r_{t+1} from taking a_t
-    terminal: jax.Array  # BATCH of terminal flags: d_{t+1}
-    # d_{t+1} = 1 if r_{t+1} is the last reward received in the trajectory
-
-    # note that the state array is one longer than the rest
+# class Rollout(NamedTuple):
+#     states: JuxState  # BATCH of states, s_t, for s in 1, ..., T+1
+#     actions: jax.Array  # BATCH of actions, a_t
+#     rewards: jax.Array  # BATCH of rewards received r_{t+1} from taking a_t
+#     terminal: jax.Array  # BATCH of terminal flags: d_{t+1}
+#     # d_{t+1} = 1 if r_{t+1} is the last reward received in the trajectory
+#
+#     # note that the state array is one longer than the rest
 
 
 def choose_factory_spawn(rng, state: JuxState):
@@ -56,34 +55,35 @@ class Trainer:
         self.rollout_length = rollout_length
 
     @partial(jax.jit, static_argnums=0)
-    def td_loss(self, params, slow_params, rollout: Rollout):
-        all_obs = jax.vmap(get_obs)(rollout.states)
+    def td_loss(self, params, slow_params, rollout):
+        states, actions, rewards, terminal = rollout
+        all_obs = jax.vmap(get_obs)(states)
         # B, H, W, C
         utility = self.model.apply(params, all_obs)
         utility_slow = self.model.apply(slow_params, all_obs)
 
         # TODO: rollout actions shape should be (batch dim, MAX_N_UNITS)
-        units_mask = rollout.states.board.units_map < INT16_MAX
+        units_mask = states.board.units_map < INT16_MAX
         selected_utility = jnp.take_along_axis(
-            utility * units_mask, rollout.actions[..., None]
+            utility * units_mask, actions[..., None]
         )
         selected_utility_slow = jnp.take_along_axis(
-            utility_slow * units_mask, rollout.actions[..., None]
+            utility_slow * units_mask, actions[..., None]
         )
 
         chex.assert_shape(
             [selected_utility, selected_utility_slow],
-            (rollout.terminal.shape[0], 48, 48, 1),
+            (terminal.shape[0], 48, 48, 1),
         )
 
         q_pred = selected_utility.sum(axis=(1, 2, 3))
         q_pred_slow = selected_utility_slow.sum(axis=(1, 2, 3))
 
-        chex.assert_shape([q_pred, q_pred_slow], (rollout.terminal.shape[0],))
+        chex.assert_shape([q_pred, q_pred_slow], (terminal.shape[0],))
 
         returns = lambda_returns(
-            rollout.rewards,
-            self.gamma * (1 - rollout.terminal),
+            rewards,
+            self.gamma * (1 - terminal),
             q_pred_slow[1:],
             lambda_=self.lam,
         )
@@ -116,79 +116,58 @@ class Trainer:
         )
         return state
 
+    # TODO: the first action should also be from the buffer.
     @partial(jax.jit, static_argnums=0)
-    def collect_rollout(self, rng, params, start_state: JuxState):
-        rollout_states: JuxState = jax.tree_util.tree_map(
+    def collect_rollout(self, rng, params, start_state: JuxState, value_noise):
+        states: JuxState = jax.tree_util.tree_map(
             lambda x: jnp.zeros((self.rollout_length,) + x.shape, x.dtype),
             start_state,
         )
-        rollout_actions = jnp.zeros(
+        actions = jnp.zeros(
             (self.rollout_length, 2, self.env.buf_cfg.MAX_N_UNITS)
         )
-        rollout_rewards = jnp.zeros(self.rollout_length)
-        rollout_terminal = jnp.zeros(self.rollout_length, dtype=jnp.bool_)
+        rewards = jnp.zeros(self.rollout_length)
+        terminal = jnp.zeros(self.rollout_length, dtype=jnp.bool_)
 
         def update(i, args):
-            (
-                rng_,
-                state_,
-                rollout_states_,
-                rollout_actions_,
-                rollout_rewards_,
-                rollout_terminal_,
-            ) = args
-            rollout_states_ = jax.tree_util.tree_map(
-                lambda x, y: x.at[i].set(y), rollout_states_, state_
+            (rng_, state_, states_, actions_, rewards_, terminal_) = args
+            states_ = jax.tree_util.tree_map(
+                lambda x, y: x.at[i].set(y), states_, state_
             )
 
+            rng_, key1, key2 = jax.random.split(rng_, num=3)
             utility = self.model.apply(params, get_obs(state_))
-            state_, actions, reward, done = step_best(state_, utility)
+            utility = utility + value_noise * jax.random.gumbel(
+                key1, shape=utility.shape
+            )
+            state_, action, reward, done = step_best(state_, utility)
 
-            rollout_actions_ = rollout_actions_.at[i].set(actions)
-            rollout_rewards_ = rollout_rewards_.at[i].set(reward)
-            rollout_terminal_ = rollout_terminal_.at[i].set(done)
+            actions_ = actions_.at[i].set(action)
+            rewards_ = rewards_.at[i].set(reward)
+            terminal_ = terminal_.at[i].set(done)
 
-            rng_, key_ = jax.random.split(rng_)
-            fresh_state = self.fresh_state(key_)
+            fresh_state = self.fresh_state(key2)
             state_ = jax.tree_map(
                 lambda x, y: jnp.where(done, x, y), fresh_state, state_
             )
-            return (
-                rng_,
-                state_,
-                rollout_states_,
-                rollout_actions_,
-                rollout_rewards_,
-                rollout_terminal_,
-            )
+            return rng_, state_, states_, actions_, rewards_, terminal_
 
-        state = start_state
-        (
-            _, _,
-            rollout_states,
-            rollout_actions,
-            rollout_rewards,
-            rollout_terminal,
-        ) = jax.lax.fori_loop(
+        _, last_state, states, actions, rewards, terminal = jax.lax.fori_loop(
             0,
             self.rollout_length,
             update,
-            (
-                rng,
-                state,
-                rollout_states,
-                rollout_actions,
-                rollout_rewards,
-                rollout_terminal,
-            ),
+            (rng, start_state, states, actions, rewards, terminal),
         )
 
-        return (
-            rollout_states,
-            rollout_actions,
-            rollout_rewards,
-            rollout_terminal,
+        all_states = jax.tree_map(
+            lambda x, y: jnp.concatenate([x, y[None]], axis=0), states, last_state
         )
+
+        return all_states, actions, rewards, terminal
+
+    def evaluate(self):
+        # TODO: log metrics in step_best
+        pass
 
 
 def main():
@@ -200,7 +179,11 @@ def main():
     params = model.init(key, get_obs(dummy_state))
 
     trainer = Trainer(JuxEnv(), model)
-    rollout = trainer.collect_rollout(rng, params, start_state=dummy_state)
+    rollout = trainer.collect_rollout(
+        rng, params, start_state=dummy_state, value_noise=3
+    )
+
+    # TODO: create heuristic demonstrations
 
 
 if __name__ == "__main__":

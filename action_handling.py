@@ -69,8 +69,9 @@ def position_scores(state: JuxState, action_scores: JaxArray):
             mode="fill", fill_value=np.nan
         )
 
+        tt = 1 if team == 0 else -1
         dig_best = dig_best.at[team].set(
-            dig_mask[team] & (scores[..., 5] > scores[..., 0])
+            dig_mask[team] & (tt * scores[..., 5] > tt * scores[..., 0])
         )
         scores = scores.at[..., 0].set(
             jnp.where(
@@ -86,7 +87,8 @@ def position_scores(state: JuxState, action_scores: JaxArray):
         chex.assert_shape(factory_mask, (1000,))
 
         dropoff_best = dropoff_best.at[team].set(
-            (factory_mask < INT8_MAX) & (scores[..., 6] > scores[..., 0])
+            (factory_mask < INT8_MAX)
+            & (tt * scores[..., 6] > tt * scores[..., 0])
         )
         scores = scores.at[..., 0].set(
             jnp.where(
@@ -127,9 +129,10 @@ def maximize_actions_callback(
 
         scores = resulting_pos_scores[team, :n]  # N, 5
 
+        # negative because the LP solver minimizes, while we want maximum score
         c = -scores.ravel()
-        if team == 1:
-            c = c * -1
+        if team == 1:  # unless we want minimum score
+            c *= -1
 
         destinations = unit_pos[:, None] + directions  # N, 5, 2
         in_bounds = (
@@ -182,6 +185,7 @@ def maximize_actions_callback(
     return ret
 
 
+# TODO: refactor to support buffer sizes (static arg env)
 def step_best(state: JuxState, action_scores: JaxArray):
     chex.assert_shape(action_scores, (48, 48, 7))
 
@@ -256,6 +260,8 @@ def step_best(state: JuxState, action_scores: JaxArray):
 
     unit_action_queue_count = jnp.ones((2, 1000), dtype=jnp.int8)
     unit_action_queue_update = jnp.zeros((2, 1000), dtype=jnp.bool_)
+
+    # TODO: fix action queue update to only update if necessary
     for team in range(2):
         unit_action_queue_update = unit_action_queue_update.at[team].set(
             jnp.where(jnp.arange(1000) < state.n_units[team], True, False)
@@ -273,12 +279,17 @@ def step_best(state: JuxState, action_scores: JaxArray):
 
     new_state = state._step_late_game(action)
 
-    old_potential = state.n_units[0] - state.n_units[1]
-    new_potential = new_state.n_units[0] - new_state.n_units[1]
-    reward = new_potential - old_potential
+    # old_potential = state.n_units[0] - state.n_units[1]
+    # new_potential = new_state.n_units[0] - new_state.n_units[1]
+    # reward = new_potential - old_potential
 
     done = (new_state.n_factories == 0).any() | (
         new_state.real_env_steps >= 1000
+    )
+    reward = jax.lax.cond(
+        done,
+        lambda: (state.team_lichen_score()[0] > state.team_lichen_score()[1]),
+        lambda: 0,
     )
 
     return new_state, selected_actions, reward, done

@@ -4,6 +4,7 @@ import re
 
 from torch import tensor
 from torch.utils.data import Dataset
+from torchvision import transforms
 
 
 BOARD_RESOURCES = ["rubble", "ice", "ore"]
@@ -56,6 +57,15 @@ class StateWinners(Dataset):
             if re.match(r"^\d*\.json$", filename)
         ]
 
+        # necessary preprocessing needed for resnet
+        self.preprocess = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
     def __len__(self):
         return len(self.filenames)
 
@@ -78,4 +88,4 @@ class StateWinners(Dataset):
         reward_0, reward_1 = data["rewards"]
         winner = int(reward_0 < reward_1)
 
-        return tensor(layers), winner
+        return self.preprocess(tensor(layers).float()), winner

@@ -53,17 +53,6 @@ def predict_target_q(ts: TrainState, state: JuxState):
 @jax.jit
 def step(ts: TrainState, state: JuxState) -> Tuple[TrainState, JuxState]:
     def td_loss(params):
-        # TODO:
-        #  predict utilities of current state
-        #  get actions from utilities
-        #  get q value of current state
-        #  take best step plus noise
-        #  predict utilities of next state
-        #  get next actions from utilities
-        #  predict slow utilities of next state
-        #  get slow q value of next state given fast next actions
-        #  loss = squared error (fast current q, slow next q)
-
         obs = get_obs(state)
         utility = ts.apply_fn(params, obs)
         next_state, actions, reward, done = step_best(state, utility)

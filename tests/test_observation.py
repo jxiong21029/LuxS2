@@ -37,7 +37,7 @@ def test_obs_smoke():
 
 
 def test_obs_correct():
-    lux_env, lux_actions = load_replay("tests/test_replay.json")
+    lux_env, lux_actions = load_replay("tests/sample_replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
     # bidding phase
     lux_act = next(lux_actions)

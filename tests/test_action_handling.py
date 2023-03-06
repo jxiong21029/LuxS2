@@ -19,7 +19,7 @@ from action_handling import (
 
 @pytest.fixture
 def sample_state():
-    lux_env, lux_actions = load_replay("tests/test_replay.json")
+    lux_env, lux_actions = load_replay("tests/sample_replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
 
     lux_act = next(lux_actions)
@@ -41,7 +41,9 @@ def sample_state():
 
 
 def test_dig_mask(sample_state):
-    dig_mask = get_dig_mask(sample_state)
+    env = JuxEnv()
+    dig_mask = jax.jit(get_dig_mask, static_argnums=0)(env, sample_state)
+
     assert dig_mask.shape == (2, 1000)
 
     for team in range(2):
@@ -56,14 +58,16 @@ def test_dig_mask(sample_state):
                 sample_state.board.ice[x, y]
                 | sample_state.board.ore[x, y]
                 | sample_state.board.rubble[x, y]
+            ) & sample_state.units.power[team, i] >= (
+                6 if sample_state.units.unit_type[team, i] == 0 else 70
             )
             assert ~can_dig | dig_mask[team, i]
 
 
 def test_resulting_pos_scores(sample_state):
-    scores, dig_best, dropoff_best = position_scores(
-        sample_state, jnp.zeros((48, 48, 7))
-    )
+    scores, dig_best, dropoff_best = jax.jit(
+        position_scores, static_argnums=0
+    )(JuxEnv(), sample_state, jnp.zeros((48, 48, 7)))
     for team in range(2):
         n = sample_state.n_units[team]
         assert not jnp.isnan(scores[team, :n]).any()
@@ -79,10 +83,12 @@ def test_resulting_pos_scores(sample_state):
 
 
 def test_action_maximization(sample_state):
-    scores, _, _ = position_scores(sample_state, jnp.zeros((48, 48, 7)))
+    scores, _, _ = jax.jit(position_scores, static_argnums=0)(
+        JuxEnv(), sample_state, jnp.zeros((48, 48, 7))
+    )
     maximize_actions_callback(sample_state, scores)
 
 
 def test_action_handling(sample_state):
     scores = jnp.zeros((48, 48, 7))
-    jax.jit(step_best)(sample_state, scores)
+    jax.jit(step_best, static_argnums=0)(JuxEnv(), sample_state, scores)

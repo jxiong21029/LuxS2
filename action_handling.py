@@ -121,18 +121,25 @@ def position_scores(env: JuxEnv, state: JuxState, action_scores: JaxArray):
     """
 
     chex.assert_shape(action_scores, (48, 48, 7))
-    unit_x, unit_y = state.units.pos.x, state.units.pos.y  # (2, U)
+    unit_x, unit_y = state.units.pos.x, state.units.pos.y
     ret = jnp.full((2, env.buf_cfg.MAX_N_UNITS, 5), fill_value=np.nan)
+
     dig_best = jnp.zeros((2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.bool_)
     dropoff_best = jnp.zeros((2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.bool_)
+    # boolean arrays where dig/dropoff are the best STATIONARY moves
+
+    chex.assert_shape(unit_x, (2, env.buf_cfg.MAX_N_UNITS))
+    chex.assert_shape(unit_y, (2, env.buf_cfg.MAX_N_UNITS))
 
     dig_mask = get_dig_mask(env, state)
+    dropoff_mask = get_dropoff_mask(env, state)
+
     for team in range(2):
+        tt = 1 if team == 0 else -1
         scores = action_scores.at[unit_x[team], unit_y[team]].get(
             mode="fill", fill_value=np.nan
         )
 
-        tt = 1 if team == 0 else -1
         dig_best = dig_best.at[team].set(
             dig_mask[team] & (tt * scores[..., 5] > tt * scores[..., 0])
         )
@@ -143,15 +150,8 @@ def position_scores(env: JuxEnv, state: JuxState, action_scores: JaxArray):
                 scores[..., 0],
             )
         )
-
-        factory_mask = state.board.factory_occupancy_map.at[
-            unit_x[team], unit_y[team]
-        ].get(mode="fill", fill_value=INT8_MAX)
-        chex.assert_shape(factory_mask, (env.buf_cfg.MAX_N_UNITS,))
-
         dropoff_best = dropoff_best.at[team].set(
-            (factory_mask < INT8_MAX)
-            & (tt * scores[..., 6] > tt * scores[..., 0])
+            dropoff_mask[team] & (tt * scores[..., 6] > tt * scores[..., 0])
         )
         scores = scores.at[..., 0].set(
             jnp.where(
@@ -336,11 +336,17 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
     # reconstruct non-movement actions
     action_types = jnp.zeros((2, env.buf_cfg.MAX_N_UNITS, 20), dtype=jnp.int8)
     action_types = action_types.at[..., 0].set(
-        jnp.where(dig_best, int(UnitActionType.DIG), action_types[..., 0])
+        jnp.where(
+            (selected_idx == 0) & dig_best,
+            int(UnitActionType.DIG),
+            action_types[..., 0],
+        )
     )
     action_types = action_types.at[..., 0].set(
         jnp.where(
-            dropoff_best, int(UnitActionType.TRANSFER), action_types[..., 0]
+            (selected_idx == 0) & dropoff_best,
+            int(UnitActionType.TRANSFER),
+            action_types[..., 0],
         )
     )
     action_types = action_types.at[..., 0].set(
@@ -413,8 +419,12 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
         unit_action_queue_update=unit_action_queue_update,
     )
 
-    selected_actions = jnp.where(dig_best, 5, selected_idx)
-    selected_actions = jnp.where(dropoff_best, 6, selected_actions)
+    selected_actions = jnp.where(
+        (selected_idx == 0) & dig_best, 5, selected_idx
+    )
+    selected_actions = jnp.where(
+        (selected_idx == 0) & dropoff_best, 6, selected_actions
+    )
 
     new_state = state._step_late_game(action)
 
@@ -429,8 +439,8 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
         done,
         lambda: (
             state.team_lichen_score()[0] > state.team_lichen_score()[1]
-        ).astype(int),
-        lambda: 0,
+        ).astype(float),
+        lambda: 0.0,
     )
 
     return new_state, selected_actions, reward, done

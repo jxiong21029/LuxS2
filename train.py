@@ -1,14 +1,14 @@
 from functools import partial
-from typing import Tuple
+from typing import Any, Tuple
 
-import chex
+import flax
 import flax.linen as nn
+import flax.training.train_state as train_state
 import jax
 import jax.numpy as jnp
-from flax.training.train_state import TrainState
+import optax
 from jux.env import JuxEnv
 from jux.state import State as JuxState
-from jux.utils import INT16_MAX
 
 from action_handling import step_best
 from observation import get_obs
@@ -25,6 +25,31 @@ class QNet(nn.Module):
         return x
 
 
+class TrainState(train_state.TrainState):
+    slow_params: flax.core.FrozenDict[str, Any]
+    slow_update_speed: float = 0.01
+
+    def apply_gradients(self, *, grads, **kwargs):
+        updates, new_opt_state = self.tx.update(
+            grads, self.opt_state, self.params
+        )
+        new_params = optax.apply_updates(self.params, updates)
+        new_slow_params = jax.tree_map(
+            lambda p1, p2: self.slow_update_speed * p1
+            + (1 - self.slow_update_speed) * p2,
+            new_params,
+            self.slow_params,
+        )
+        return self.replace(
+            step=self.step + 1,
+            params=new_params,
+            slow_params=new_slow_params,
+            opt_state=new_opt_state,
+            slow_update_speed=self.slow_update_speed,
+            **kwargs,
+        )
+
+
 def choose_factory_spawn(rng, state: JuxState):
     spawns_mask = state.board.valid_spawns_mask
     selected = jax.random.choice(
@@ -34,13 +59,13 @@ def choose_factory_spawn(rng, state: JuxState):
     return jnp.stack([coords, coords], axis=0)
 
 
-def predict_target_q(ts: TrainState, state: JuxState):
+def predict_target_q(env, ts: TrainState, state: JuxState):
     obs = get_obs(state)
-    utility = ts.apply_fn(ts.params, obs)
-    _, actions, _, _ = step_best(state, utility)
+    utility = ts.apply_fn({"params": ts.params}, obs)
+    _, actions, _, _ = step_best(env, state, utility)
 
     # double q-learning style: select actions with fast, set target w/ slow
-    slow_utility = ts.apply_fn(ts.slow_params, obs)
+    slow_utility = ts.apply_fn({"params": ts.slow_params}, obs)
     selected_utility = slow_utility.at[
         state.units.pos.x, state.units.pos.y, actions
     ].get(
@@ -50,12 +75,43 @@ def predict_target_q(ts: TrainState, state: JuxState):
     return team_utility[0] - team_utility[1]
 
 
-@jax.jit
-def step(ts: TrainState, state: JuxState) -> Tuple[TrainState, JuxState]:
+def fresh_state(env, rng) -> JuxState:
+    rng, key = jax.random.split(rng)
+    seed = jax.random.randint(key, (), 0, 2**16)
+
+    state = env.reset(seed)
+
+    state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
+
+    def step_factory_placement(_i, args):
+        rng_, s = args
+        rng_, key_ = jax.random.split(rng_)
+        action = choose_factory_spawn(key_, s)
+        new_s, _ = env.step_factory_placement(
+            state, action, jnp.array([150, 150]), jnp.array([150, 150])
+        )
+        return rng_, new_s
+
+    rng, key = jax.random.split(rng)
+    _, state = jax.lax.fori_loop(
+        0,
+        state.board.factories_per_team.astype(jnp.int32),
+        step_factory_placement,
+        (key, state),
+    )
+    return state
+
+
+@partial(jax.jit, static_argnums=0)
+def train_step(
+    env: JuxEnv, ts: TrainState, state: JuxState, rng
+) -> Tuple[TrainState, JuxState]:
     def td_loss(params):
         obs = get_obs(state)
-        utility = ts.apply_fn(params, obs)
-        next_state, actions, reward, done = step_best(state, utility)
+        utility = ts.apply_fn({"params": params}, obs)
+        next_state, actions, reward, done = step_best(
+            env, state, jax.lax.stop_gradient(utility)
+        )
 
         selected_utility = utility.at[
             state.units.pos.x, state.units.pos.y, actions
@@ -65,22 +121,59 @@ def step(ts: TrainState, state: JuxState) -> Tuple[TrainState, JuxState]:
         team_utility = selected_utility.sum(axis=-1)
         q_pred = team_utility[0] - team_utility[1]
         q_target = jax.lax.cond(
-            done, lambda: reward, lambda: predict_target_q(ts, next_state)
+            done,
+            lambda: reward,
+            lambda: reward + predict_target_q(env, ts, next_state),
         )
-        return (q_pred - q_target) ** 2, next_state, done
+        return (
+            (q_pred - jax.lax.stop_gradient(q_target)) ** 2,
+            (next_state, done),
+        )
 
     grads, (next_state_, done_) = jax.grad(td_loss, has_aux=True)(ts.params)
-    ts = ts.apply_gradients(grads=grads)
-    return ts, next_state_, done_
+    next_state_ = jax.lax.cond(
+        done_,
+        lambda: fresh_state(env, rng),
+        lambda: next_state_,
+    )
+    # ts = ts.apply_gradients(grads=grads)
+    # return ts, next_state_
+    return grads, next_state_
 
 
 def main():
+    env = JuxEnv()
     rng = jax.random.PRNGKey(42)
-    rng, key = jax.random.split(rng)
 
-    dummy_state = JuxEnv().reset(0)
+    rng, *keys = jax.random.split(rng, num=1001)
+    replay_buffer = jax.vmap(
+        jax.jit(fresh_state, static_argnums=0), in_axes=[None, 0]
+    )(env, jnp.stack(keys, axis=0))
+
+    rng, key = jax.random.split(rng)
     model = QNet()
-    params = model.init(key, get_obs(dummy_state))
+    params = model.init(rng, get_obs(fresh_state(env, rng)))["params"]
+
+    ts = TrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        slow_params=params,
+        tx=optax.adam(1e-3),
+    )
+    step_batch = jax.vmap(
+        train_step, in_axes=(None, None, 0, 0), out_axes=(0, 0)
+    )
+
+    rng, *keys = jax.random.split(rng, num=65)
+    grads, next_state = step_batch(
+        env,
+        ts,
+        jax.tree_map(lambda x: x[:64], replay_buffer),
+        jnp.stack(keys, axis=0),
+    )
+    print(grads, next_state)
+    print(jax.tree_map(lambda x: x.shape, grads))
+    print(jax.tree_map(lambda x: x.shape, next_state))
 
 
 if __name__ == "__main__":

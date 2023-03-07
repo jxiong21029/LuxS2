@@ -1,3 +1,4 @@
+import chex
 import jax
 import jax.numpy as jnp
 import pytest
@@ -19,7 +20,7 @@ from action_handling import (
 
 
 @pytest.fixture
-def sample_state():
+def sample_states():
     lux_env, lux_actions = load_replay("tests/sample_replay.json")
     jux_env, state = JuxEnv.from_lux(lux_env)
 
@@ -33,63 +34,91 @@ def sample_state():
 
         state, _ = jux_env.step_factory_placement(state, spawn, water, metal)
 
-    for _ in range(800):
+    ret = [state]
+    for i in range(800):
         lux_act = next(lux_actions)
         jux_act = JuxAction.from_lux(state, lux_act)
         state, _ = jux_env.step_late_game(state, jux_act)
 
-    return state
+        if i % 100 == 99:
+            ret.append(state)
+
+    assert len(ret) == 9
+
+    return ret
 
 
-def test_dig_mask(sample_state):
+def test_dig_mask_sufficient(sample_states):
     env = JuxEnv()
-    dig_mask = jax.jit(get_dig_mask, static_argnums=0)(env, sample_state)
-
-    assert dig_mask.shape == (2, 1000)
-
-    for team in range(2):
-        assert jnp.all(~dig_mask[sample_state.n_units[team] :])
-
-        for i in range(sample_state.n_units[team]):
-            x, y = (
-                sample_state.units.pos.x[team, i],
-                sample_state.units.pos.y[team, i],
-            )
-            can_dig = (
-                sample_state.board.ice[x, y]
-                | sample_state.board.ore[x, y]
-                | sample_state.board.rubble[x, y]
-            ) & sample_state.units.power[team, i] >= (
-                6 if sample_state.units.unit_type[team, i] == 0 else 70
-            )
-            assert ~can_dig | dig_mask[team, i]
-
-
-def test_resulting_pos_scores(sample_state):
-    scores, dig_best, dropoff_best = jax.jit(
-        position_scores, static_argnums=0
-    )(JuxEnv(), sample_state, jnp.zeros((48, 48, 7)))
-    for team in range(2):
-        n = sample_state.n_units[team]
-        assert not jnp.isnan(scores[team, :n]).any()
-        assert jnp.isnan(scores[team, n:]).all()
-
-        assert not jnp.any(dig_best[team, n:])
-        assert not jnp.any(dropoff_best[team, n:])
-
-        assert not jnp.any(dig_best & dropoff_best)
-        assert jnp.all(
-            ~(dig_best | dropoff_best) | (jnp.argmax(scores, axis=2) == 0)
-        )
-
-
-def test_action_maximization(sample_state):
-    scores, _, _ = jax.jit(position_scores, static_argnums=0)(
-        JuxEnv(), sample_state, jnp.zeros((48, 48, 7))
+    jitted = jax.jit(
+        chex.assert_max_traces(n=1)(get_dig_mask), static_argnums=0
     )
-    maximize_actions_callback(EnvConfig(), sample_state, scores)
+    for sample_state in sample_states:
+        dig_mask = jitted(env, sample_state)
+
+        assert dig_mask.shape == (2, 1000)
+
+        for team in range(2):
+            assert jnp.all(~dig_mask[sample_state.n_units[team] :])
+
+            for i in range(sample_state.n_units[team]):
+                x, y = (
+                    sample_state.units.pos.x[team, i],
+                    sample_state.units.pos.y[team, i],
+                )
+                can_dig = (
+                    sample_state.board.ice[x, y]
+                    | sample_state.board.ore[x, y]
+                    | sample_state.board.rubble[x, y]
+                ) & sample_state.units.power[team, i] >= (
+                    6 if sample_state.units.unit_type[team, i] == 0 else 70
+                )
+                assert ~can_dig | dig_mask[team, i]
 
 
-def test_step_best(sample_state):
-    scores = jnp.zeros((48, 48, 7))
-    jax.jit(step_best, static_argnums=0)(JuxEnv(), sample_state, scores)
+def test_resulting_pos_scores_valid(sample_states):
+    env = JuxEnv()
+    rng = jax.random.PRNGKey(42)
+    jitted = jax.jit(
+        chex.assert_max_traces(n=1)(position_scores), static_argnums=0
+    )
+
+    for sample_state in sample_states:
+        rng, key = jax.random.split(rng)
+
+        utility = jax.random.normal(key, shape=(48, 48, 7))
+        scores, dig_best, dropoff_best = jitted(env, sample_state, utility)
+        chex.assert_shape(scores, (2, env.buf_cfg.MAX_N_UNITS, 5))
+        chex.assert_shape(dig_best, (2, env.buf_cfg.MAX_N_UNITS))
+        chex.assert_shape(dropoff_best, (2, env.buf_cfg.MAX_N_UNITS))
+
+        for team in range(2):
+            n = sample_state.n_units[team]
+            assert not jnp.isnan(scores[team, :n]).any()
+            assert jnp.isnan(scores[team, n:]).all()
+
+            assert not jnp.any(dig_best[team, n:])
+            assert not jnp.any(dropoff_best[team, n:])
+
+            assert not jnp.any(dig_best & dropoff_best)
+
+
+def test_action_maximization_smoke(sample_states):
+    env = JuxEnv()
+    jitted = jax.jit(
+        chex.assert_max_traces(n=1)(position_scores), static_argnums=0
+    )
+    for sample_state in sample_states:
+        scores, _, _ = jitted(env, sample_state, jnp.zeros((48, 48, 7)))
+        maximize_actions_callback(EnvConfig(), sample_state, scores)
+
+
+def test_step_best_smoke(sample_states):
+    env = JuxEnv()
+    rng = jax.random.PRNGKey(42)
+    jitted = jax.jit(chex.assert_max_traces(n=1)(step_best), static_argnums=0)
+    for sample_state in sample_states:
+        rng, key = jax.random.split(rng)
+
+        scores = jax.random.normal(key, shape=(48, 48, 7))
+        jitted(env, sample_state, scores)

@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array as JaxArray
 from jux.actions import FactoryAction, JuxAction, UnitAction, UnitActionType
+from jux.config import EnvConfig
 from jux.env import JuxEnv
 from jux.map.position import Direction
 from jux.state import State as JuxState
@@ -15,7 +16,7 @@ from scipy.sparse import coo_array
 
 
 def get_dig_mask(env: JuxEnv, state: JuxState):
-    unit_x, unit_y = state.units.pos.x, state.units.pos.y  # (2, U)
+    unit_x, unit_y = state.units.pos.x, state.units.pos.y
 
     on_ice = state.board.ice.at[unit_x, unit_y].get(
         mode="fill", fill_value=False
@@ -177,7 +178,7 @@ directions = np.array(
 
 
 def maximize_actions_callback(
-    env: JuxEnv, state: JuxState, resulting_pos_scores: np.ndarray
+    env_cfg: EnvConfig, state: JuxState, resulting_pos_scores: np.ndarray
 ):
     ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
     for team in range(2):
@@ -218,39 +219,78 @@ def maximize_actions_callback(
         )
         b_lt = np.ones(48 * 48)
 
-        power_req = jnp.where(
-            state.units.unit_type == int(UnitType.LIGHT),
-            state.units.move_power_cost()
-            env.env_cfg.ROBOTS[1].DIG_COST,
+        destination_rubble = state.board.rubble[
+            destinations[..., 0], destinations[..., 1]
+        ]
+        chex.assert_shape(destination_rubble, (n, 5))
+        unit_types = np.tile(state.units.unit_type[team, :n, None], reps=(5,))
+        chex.assert_shape(unit_types, (n, 5))
+        power_req = np.where(
+            unit_types == int(UnitType.LIGHT),
+            np.floor(
+                env_cfg.ROBOTS[0].MOVE_COST
+                + env_cfg.ROBOTS[0].RUBBLE_MOVEMENT_COST * destination_rubble
+            ),
+            np.floor(
+                env_cfg.ROBOTS[1].MOVE_COST
+                + env_cfg.ROBOTS[1].RUBBLE_MOVEMENT_COST * destination_rubble
+            ),
         )
-        action_queue_rewrite_costs = jnp.where(
-            state.units.unit_type == int(UnitType.LIGHT),
-            env.env_cfg.ROBOTS[0].ACTION_QUEUE_POWER_COST,
-            env.env_cfg.ROBOTS[1].ACTION_QUEUE_POWER_COST,
-        )
+        chex.assert_shape(power_req, (n, 5))
 
-        power_req = power_req + jnp.where(
-            state.units.action_queue.data.action_type[..., 0]
-            == int(UnitActionType.DIG),
-            0,
-            action_queue_rewrite_costs,
+        # we want to set rewrite costs to 0 if type==move and direction correct
+
+        action_queue_rewrite_costs = np.where(
+            state.units.unit_type[team, :n] == int(UnitType.LIGHT),
+            env_cfg.ROBOTS[0].ACTION_QUEUE_POWER_COST,
+            env_cfg.ROBOTS[1].ACTION_QUEUE_POWER_COST,
         )
+        chex.assert_shape(action_queue_rewrite_costs, (n,))
+
+        move_rewrite_costs = np.tile(
+            action_queue_rewrite_costs[..., None], reps=(5,)
+        )
+        chex.assert_shape(move_rewrite_costs, (n, 5))
+
+        correct_action_type = state.units.action_queue.data.action_type[
+            team, :n, 0
+        ] == int(UnitActionType.MOVE)
+        chex.assert_shape(correct_action_type, (n,))
+
+        move_directions = state.units.action_queue.data.direction[team, :n, 0]
+        move_rewrite_costs[
+            np.arange(n)[correct_action_type],
+            move_directions[correct_action_type],
+        ] = 0
+
+        power_req += move_rewrite_costs
+        not_enough_power = (
+            np.asarray(state.units.power[team, :n, None]) < power_req
+        )
+        chex.assert_shape(not_enough_power, (n, 5))
+
+        not_enough_power[..., 0] = False
 
         # n rows for the (each unit must select exactly one move) constraint
         # 1 final row for the (no out-of-bounds moves may be selected)
         num_oob = (~in_bounds).sum()
         a_eq = coo_array(
             (
-                np.ones(5 * n + num_oob),
+                np.ones(5 * n + num_oob + not_enough_power.sum()),
                 (
                     np.concatenate(
                         [
                             np.arange(n).repeat(5),
-                            np.full(num_oob, fill_value=5 * n),
+                            np.full(num_oob, fill_value=n),
+                            np.full(not_enough_power.sum(), fill_value=n + 1),
                         ]
                     ),
                     np.concatenate(
-                        [np.arange(5 * n), (~in_bounds).nonzero()[0]]
+                        [
+                            np.arange(5 * n),
+                            (~in_bounds).nonzero()[0],
+                            not_enough_power.nonzero()[0],
+                        ]
                     ),
                 ),
             ),
@@ -275,6 +315,7 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
         jax.ShapeDtypeStruct(
             shape=(2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
         ),
+        env.env_cfg,
         state,
         scores,
         vectorized=False,
@@ -345,19 +386,25 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
     unit_action_queue_count = jnp.ones(
         (2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
     )
-    unit_action_queue_update = jnp.zeros(
-        (2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.bool_
+    unit_action_queue_update = jnp.where(
+        jnp.arange(env.buf_cfg.MAX_N_UNITS)[None, :] < state.n_units[:, None],
+        True,
+        False,
+    )
+    chex.assert_shape(unit_action_queue_update, (2, env.buf_cfg.MAX_N_UNITS))
+
+    queue_front_equal = jax.tree_map(
+        lambda a, b: a[..., 0] == b[..., 0],
+        unit_action_queue,
+        state.units.action_queue.data,
     )
 
-    # TODO: fix action queue update to only update if necessary
-    for team in range(2):
-        unit_action_queue_update = unit_action_queue_update.at[team].set(
-            jnp.where(
-                jnp.arange(env.buf_cfg.MAX_N_UNITS) < state.n_units[team],
-                True,
-                False,
-            )
-        )
+    queue_front_equal = jax.tree_util.tree_reduce(
+        jnp.logical_and, queue_front_equal
+    )
+    chex.assert_shape(queue_front_equal, (2, env.buf_cfg.MAX_N_UNITS))
+
+    unit_action_queue_update = unit_action_queue_update & ~queue_front_equal
 
     action = JuxAction(
         factory_action=factory_action,

@@ -6,6 +6,7 @@ from jux.actions import (
     bid_action_from_lux,
     factory_placement_action_from_lux,
 )
+from jux.config import EnvConfig
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
@@ -86,9 +87,9 @@ def test_action_maximization(sample_state):
     scores, _, _ = jax.jit(position_scores, static_argnums=0)(
         JuxEnv(), sample_state, jnp.zeros((48, 48, 7))
     )
-    maximize_actions_callback(sample_state, scores)
+    maximize_actions_callback(EnvConfig(), sample_state, scores)
 
 
-def test_action_handling(sample_state):
+def test_step_best(sample_state):
     scores = jnp.zeros((48, 48, 7))
     jax.jit(step_best, static_argnums=0)(JuxEnv(), sample_state, scores)

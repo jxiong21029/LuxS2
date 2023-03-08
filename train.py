@@ -1,12 +1,14 @@
 from functools import partial
 from typing import Any, Tuple
 
+import chex
 import flax
 import flax.linen as nn
 import flax.training.train_state as train_state
 import jax
 import jax.numpy as jnp
 import optax
+import tqdm
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 
@@ -103,6 +105,7 @@ def fresh_state(env, rng) -> JuxState:
 
 
 @partial(jax.jit, static_argnums=0)
+@chex.assert_max_traces(n=1)
 def train_step(
     env: JuxEnv, ts: TrainState, state: JuxState, rng
 ) -> Tuple[TrainState, JuxState]:
@@ -146,9 +149,8 @@ def main():
     rng = jax.random.PRNGKey(42)
 
     rng, *keys = jax.random.split(rng, num=1001)
-    replay_buffer = jax.vmap(
-        jax.jit(fresh_state, static_argnums=0), in_axes=[None, 0]
-    )(env, jnp.stack(keys, axis=0))
+    jitted = jax.jit(fresh_state, static_argnums=0)
+    replay_buffer = [jitted(env, keys[i]) for i in range(1000)]
 
     rng, key = jax.random.split(rng)
     model = QNet()
@@ -164,16 +166,36 @@ def main():
         train_step, in_axes=(None, None, 0, 0), out_axes=(0, 0)
     )
 
-    rng, *keys = jax.random.split(rng, num=65)
-    grads, next_state = step_batch(
-        env,
-        ts,
-        jax.tree_map(lambda x: x[:64], replay_buffer),
-        jnp.stack(keys, axis=0),
-    )
-    print(grads, next_state)
-    print(jax.tree_map(lambda x: x.shape, grads))
-    print(jax.tree_map(lambda x: x.shape, next_state))
+    rng, key = jax.random.split(rng)
+    idx = jax.random.permutation(key, jnp.arange(1000))
+    minibatch_size = 64
+
+    with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
+        for i in tqdm.trange(len(idx) // minibatch_size):
+            rng, *keys = jax.random.split(rng, num=65)
+            grads, next_state = step_batch(
+                env,
+                ts,
+                jax.tree_map(
+                    lambda *xs: jnp.stack(xs, axis=0),
+                    *[
+                        replay_buffer[j]
+                        for j in idx[
+                            i * minibatch_size : (i + 1) * minibatch_size
+                        ]
+                    ],
+                ),
+                jnp.stack(keys, axis=0),
+            )
+
+            grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
+            ts.apply_gradients(grads=grads)
+
+            # next_state = jax.tree_map(lambda x: list(x), next_state)
+            for i_, j in enumerate(
+                idx[i * minibatch_size : (i + 1) * minibatch_size]
+            ):
+                replay_buffer[j] = jax.tree_map(lambda x: x[i_], next_state)
 
 
 if __name__ == "__main__":

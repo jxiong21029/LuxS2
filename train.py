@@ -61,22 +61,6 @@ def choose_factory_spawn(rng, state: JuxState):
     return jnp.stack([coords, coords], axis=0)
 
 
-def predict_target_q(env, ts: TrainState, state: JuxState):
-    obs = get_obs(state)
-    utility = ts.apply_fn({"params": ts.params}, obs)
-    _, actions, _, _ = step_best(env, state, utility)
-
-    # double q-learning style: select actions with fast, set target w/ slow
-    slow_utility = ts.apply_fn({"params": ts.slow_params}, obs)
-    selected_utility = slow_utility.at[
-        state.units.pos.x, state.units.pos.y, actions
-    ].get(
-        mode="fill", fill_value=0.0
-    )  # (2, 1000)
-    team_utility = selected_utility.sum(axis=-1)
-    return team_utility[0] - team_utility[1]
-
-
 def fresh_state(env, rng) -> JuxState:
     rng, key = jax.random.split(rng)
     seed = jax.random.randint(key, (), 0, 2**16)
@@ -97,30 +81,47 @@ def fresh_state(env, rng) -> JuxState:
     rng, key = jax.random.split(rng)
     _, state = jax.lax.fori_loop(
         0,
-        state.board.factories_per_team.astype(jnp.int32),
+        2 * state.board.factories_per_team.astype(jnp.int32),
         step_factory_placement,
         (key, state),
     )
     return state
 
 
+def predict_target_q(env, ts: TrainState, state: JuxState):
+    obs = get_obs(state)
+    utility = ts.apply_fn({"params": ts.params}, obs)
+    _, actions, _, _ = step_best(env, state, utility)
+
+    # double q-learning style: select actions with fast, set target w/ slow
+    slow_utility = ts.apply_fn({"params": ts.slow_params}, obs)
+    selected_utility = slow_utility.at[
+        state.units.pos.x, state.units.pos.y, actions
+    ].get(mode="fill", fill_value=0.0)
+    team_utility = selected_utility.sum(axis=-1)
+    return team_utility[0] - team_utility[1]
+
+
 @partial(jax.jit, static_argnums=0)
 @chex.assert_max_traces(n=1)
 def train_step(
-    env: JuxEnv, ts: TrainState, state: JuxState, rng
+    env: JuxEnv, ts: TrainState, state: JuxState, noise, rng
 ) -> Tuple[TrainState, JuxState]:
+    rng, key = jax.random.split(rng)
+
     def td_loss(params):
         obs = get_obs(state)
         utility = ts.apply_fn({"params": params}, obs)
         next_state, actions, reward, done = step_best(
-            env, state, jax.lax.stop_gradient(utility)
+            env,
+            state,
+            jax.lax.stop_gradient(utility)
+            + noise * jax.random.gumbel(key, utility.shape),
         )
 
         selected_utility = utility.at[
             state.units.pos.x, state.units.pos.y, actions
-        ].get(
-            mode="fill", fill_value=0.0
-        )  # (2, 1000)
+        ].get(mode="fill", fill_value=0.0)
         team_utility = selected_utility.sum(axis=-1)
         q_pred = team_utility[0] - team_utility[1]
         q_target = jax.lax.cond(
@@ -139,8 +140,6 @@ def train_step(
         lambda: fresh_state(env, rng),
         lambda: next_state_,
     )
-    # ts = ts.apply_gradients(grads=grads)
-    # return ts, next_state_
     return grads, next_state_
 
 

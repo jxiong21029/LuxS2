@@ -7,8 +7,9 @@ from jux.actions import (
     bid_action_from_lux,
     factory_placement_action_from_lux,
 )
-from jux.config import EnvConfig
+from jux.config import EnvConfig, JuxBufferConfig
 from jux.env import JuxEnv
+from jux.state import State as JuxState
 from jux.utils import load_replay
 
 from action_handling import (
@@ -110,7 +111,9 @@ def test_action_maximization_smoke(sample_states):
     )
     for sample_state in sample_states:
         scores, _, _ = jitted(env, sample_state, jnp.zeros((48, 48, 7)))
-        maximize_actions_callback(EnvConfig(), sample_state, scores)
+        maximize_actions_callback(
+            EnvConfig(), JuxBufferConfig(), sample_state, scores
+        )
 
 
 def test_step_best_smoke(sample_states):
@@ -122,3 +125,40 @@ def test_step_best_smoke(sample_states):
 
         scores = jax.random.normal(key, shape=(48, 48, 7))
         jitted(env, sample_state, scores)
+
+
+def test_step_best_resource_rich_smoke(sample_states):
+    env = JuxEnv()
+    jitted = jax.jit(step_best, static_argnums=0)
+
+    state = sample_states[-1]
+    state = state._replace(
+        board=state.board._replace(
+            map=state.board.map._replace(
+                rubble=jnp.zeros_like(state.board.map.rubble)
+            )
+        ),
+        factories=state.factories._replace(
+            cargo=state.factories.cargo._replace(
+                stock=jnp.full_like(
+                    state.factories.cargo.stock, fill_value=9999
+                )
+            )
+        ),
+    )
+    done = False
+
+    rng = jax.random.PRNGKey(42)
+    while not done:
+        rng, key = jax.random.split(rng)
+        next_state, actions, reward, done = jitted(
+            env, state, jax.random.normal(key, shape=(48, 48, 7))
+        )
+        assert next_state.real_env_steps == state.real_env_steps + 1
+
+        if done:
+            assert reward in (0, 0.5, 1)
+            break
+        else:
+            assert reward == 0
+            state = next_state

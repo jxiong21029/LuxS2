@@ -1,10 +1,12 @@
+from typing import Tuple
+
 import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array as JaxArray
 from jux.actions import FactoryAction, JuxAction, UnitAction, UnitActionType
-from jux.config import EnvConfig
+from jux.config import EnvConfig, JuxBufferConfig
 from jux.env import JuxEnv
 from jux.map.position import Direction
 from jux.state import State as JuxState
@@ -178,9 +180,12 @@ directions = np.array(
 
 
 def maximize_actions_callback(
-    env_cfg: EnvConfig, state: JuxState, resulting_pos_scores: np.ndarray
+    env_cfg: EnvConfig,
+    buf_cfg: JuxBufferConfig,
+    state: JuxState,
+    resulting_pos_scores: np.ndarray,
 ):
-    ret = np.zeros((2, resulting_pos_scores.shape[1]), dtype=np.int8)
+    ret = np.zeros((2, buf_cfg.MAX_N_UNITS), dtype=np.int8)
     for team in range(2):
         n = state.n_units[team]
         if n == 0:
@@ -219,8 +224,10 @@ def maximize_actions_callback(
         )
         b_lt = np.ones(48 * 48)
 
-        destination_rubble = state.board.rubble[
-            destinations[..., 0], destinations[..., 1]
+        destination_rubble = np.zeros((n, 5), dtype=int)
+        destination_rubble.ravel()[in_bounds] = state.board.rubble[
+            destinations[..., 0].ravel()[in_bounds],
+            destinations[..., 1].ravel()[in_bounds],
         ]
         chex.assert_shape(destination_rubble, (n, 5))
         unit_types = np.tile(state.units.unit_type[team, :n, None], reps=(5,))
@@ -289,7 +296,7 @@ def maximize_actions_callback(
                         [
                             np.arange(5 * n),
                             (~in_bounds).nonzero()[0],
-                            not_enough_power.nonzero()[0],
+                            not_enough_power.ravel().nonzero()[0],
                         ]
                     ),
                 ),
@@ -306,7 +313,7 @@ def maximize_actions_callback(
     return ret
 
 
-def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
+def get_best_action(env, state, action_scores):
     chex.assert_shape(action_scores, (48, 48, 7))
 
     scores, dig_best, dropoff_best = position_scores(env, state, action_scores)
@@ -316,12 +323,18 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
             shape=(2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
         ),
         env.env_cfg,
+        env.buf_cfg,
         state,
         scores,
         vectorized=False,
     )  # (2, MAX_N_UNITS)
 
-    # heuristic factory behavior: simply build light robots when possible
+    # heuristic factory behavior: build light robots if possible
+    # otherwise, water if it increases lichen and either
+    #   (water > 150 or 2 * water > steps remaining)
+
+    _, n_watered_locations, _ = state._cache_water_info(None)
+
     factory_action = jnp.where(
         (state.factories.cargo.metal >= env.env_cfg.ROBOTS[0].METAL_COST)
         & (state.factories.power >= env.env_cfg.ROBOTS[0].POWER_COST)
@@ -330,7 +343,18 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
             == INT16_MAX
         ),
         int(FactoryAction.BUILD_LIGHT),
-        int(FactoryAction.DO_NOTHING),
+        jnp.where(
+            (n_watered_locations > 0)
+            & (
+                (state.factories.cargo.water > 150)
+                | (
+                    2 * state.factories.cargo.water
+                    > 1000 - state.real_env_steps
+                )
+            ),
+            int(FactoryAction.WATER),
+            int(FactoryAction.DO_NOTHING),
+        ),
     ).astype(jnp.int8)
 
     # reconstruct non-movement actions
@@ -412,19 +436,22 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
 
     unit_action_queue_update = unit_action_queue_update & ~queue_front_equal
 
-    action = JuxAction(
+    jux_action = JuxAction(
         factory_action=factory_action,
         unit_action_queue=unit_action_queue,
         unit_action_queue_count=unit_action_queue_count,
         unit_action_queue_update=unit_action_queue_update,
     )
 
-    selected_actions = jnp.where(
-        (selected_idx == 0) & dig_best, 5, selected_idx
-    )
-    selected_actions = jnp.where(
-        (selected_idx == 0) & dropoff_best, 6, selected_actions
-    )
+    action_arr = jnp.where((selected_idx == 0) & dig_best, 5, selected_idx)
+    action_arr = jnp.where((selected_idx == 0) & dropoff_best, 6, action_arr)
+    return jux_action, action_arr
+
+
+def step_best(
+    env: JuxEnv, state: JuxState, action_scores: JaxArray
+) -> Tuple[JuxState, jnp.int8, jnp.float32, jnp.bool_]:
+    action, action_arr = get_best_action(env, state, action_scores)
 
     new_state = state._step_late_game(action)
 
@@ -435,12 +462,16 @@ def step_best(env: JuxEnv, state: JuxState, action_scores: JaxArray):
     done = (new_state.n_factories == 0).any() | (
         new_state.real_env_steps >= 1000
     )
-    reward = jax.lax.cond(
+    reward = jnp.where(
         done,
-        lambda: (
-            state.team_lichen_score()[0] > state.team_lichen_score()[1]
-        ).astype(float),
-        lambda: 0.0,
+        jnp.where(
+            state.team_lichen_score()[0] == state.team_lichen_score()[1],
+            0.5,
+            (
+                state.team_lichen_score()[0] > state.team_lichen_score()[1]
+            ).astype(float),
+        ),
+        0.0,
     )
 
-    return new_state, selected_actions, reward, done
+    return new_state, action_arr, reward, done

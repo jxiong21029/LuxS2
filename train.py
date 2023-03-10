@@ -12,7 +12,7 @@ import tqdm
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 
-from action_handling import step_best
+from dynamics import step_best
 from observation import get_obs
 
 

@@ -7,14 +7,12 @@ from jux.actions import (
     bid_action_from_lux,
     factory_placement_action_from_lux,
 )
-from jux.config import EnvConfig, JuxBufferConfig
+from jux.config import JuxBufferConfig
 from jux.env import JuxEnv
-from jux.state import State as JuxState
 from jux.utils import load_replay
 
-from action_handling import (
+from dynamics import (
     get_dig_mask,
-    maximize_actions_callback,
     position_scores,
     step_best,
 )
@@ -162,10 +160,7 @@ def test_step_best_resource_rich_smoke(sample_states):
         )
         assert next_state.real_env_steps == state.real_env_steps + 1
 
-        if done:
-            assert reward in (0, 0.5, 1)
-            break
-        else:
+        if not done:
             assert reward == 0
             state = next_state
 

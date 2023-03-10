@@ -9,7 +9,7 @@ from jux.env import JuxEnv
 from jux.state import State as JuxState
 from luxai_runner.utils import to_json
 
-from action_handling import get_best_action
+from dynamics import get_best_action
 from observation import get_obs
 from train import QNet
 

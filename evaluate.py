@@ -1,18 +1,17 @@
 import json
 
+import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
+from jux.config import JuxBufferConfig
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 from luxai_runner.utils import to_json
 
 from action_handling import get_best_action
 from observation import get_obs
-from train import QNet, TrainState, train_step
-
-# rng, key = jax.random.split(rng)
+from train import QNet
 
 
 def choose_factory_spawn(rng, state: JuxState):
@@ -24,18 +23,31 @@ def choose_factory_spawn(rng, state: JuxState):
     return jnp.stack([coords, coords], axis=0)
 
 
-def main():
-    env = JuxEnv()
-    rng = jax.random.PRNGKey(42)
+def play(rng, model: nn.Module, params0, params1=None):
+    if params1 is None:
+        params1 = params0
 
-    state = env.reset(0)
+    env = JuxEnv(buf_cfg=JuxBufferConfig(MAX_N_UNITS=250))
+
+    rng, key = jax.random.split(rng)
+    state = env.reset(jax.random.randint(key, (), 0, 2**31 - 1).item())
 
     replay = {
         "observations": [state.to_lux().get_compressed_obs()],
         "actions": [{}],
     }
 
-    state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
+    next_state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
+    replay["observations"].append(
+        next_state.to_lux().get_change_obs(state.to_lux().get_compressed_obs())
+    )
+    replay["actions"].append(
+        {
+            "player_0": {"faction": "AlphaStrike", "bid": 0},
+            "player_1": {"faction": "MotherMars", "bid": 0},
+        }
+    )
+    state = next_state
 
     for i in range(2 * state.board.factories_per_team):
         rng, key = jax.random.split(rng)
@@ -45,56 +57,77 @@ def main():
         )
 
         replay["observations"].append(
-            next_state.to_lux().get_change_obs(state.to_lux().get_compressed_obs())
+            next_state.to_lux().get_change_obs(
+                state.to_lux().get_compressed_obs()
+            )
         )
         replay["actions"].append(
             {
                 "player_0": {
-                    "spawn": np.asarray(action),
+                    "spawn": np.asarray(action[0]),
                     "water": 150,
                     "metal": 150,
                 },
                 "player_1": {
-                    "spawn": np.asarray(action),
+                    "spawn": np.asarray(action[1]),
                     "water": 150,
                     "metal": 150,
                 },
             }
         )
-
         state = next_state
 
-    # rng, key = jax.random.split(rng)
-    # model = QNet()
-    # params = model.init(key, get_obs(state))["params"]
-    #
-    # ts = TrainState.create(
-    #     apply_fn=model.apply,
-    #     params=params,
-    #     slow_params=params,
-    #     tx=optax.adam(1e-3),
-    # )
+    rng, key = jax.random.split(rng)
 
+    @jax.jit
+    def get_action_scores(state_: JuxState):
+        obs = get_obs(state_)
+
+        q0 = model.apply(params0, obs)
+        q1 = model.apply(params1, obs)
+        mask = (
+            jnp.zeros((48, 48), dtype=jnp.bool_)
+            .at[state.units.pos.x[1], state.units.pos.y[1]]
+            .set(True, mode="drop")
+        )
+        return jnp.where(mask[..., None], q1, q0)
+
+    jitted = jax.jit(get_best_action, static_argnums=0)
     done = False
     while not done:
         print(state.real_env_steps)
         rng, key = jax.random.split(rng)
-        action, _ = get_best_action(
-            env, state, jax.random.gumbel(key, (48, 48, 7))
-        )
-        next_state, (_, _, dones, _) = env.step_late_game(state, action)
 
+        action, _ = jitted(env, state, get_action_scores(state))
+        next_state, (_, _, dones, _) = env.step_late_game(state, action)
         done = dones[0]
 
         replay["observations"].append(
-            next_state.to_lux().get_change_obs(state.to_lux().get_compressed_obs())
+            next_state.to_lux().get_change_obs(
+                state.to_lux().get_compressed_obs()
+            )
         )
         replay["actions"].append(action.to_lux(state))
 
         state = next_state
 
+    replay = jax.tree_map(
+        lambda x: np.asarray(x) if isinstance(x, jax.Array) else x,
+        replay,
+    )
     with open("eval_replay.json", "w") as f:
         json.dump(to_json(replay), f)
+
+
+def main():
+    rng = jax.random.PRNGKey(42)
+
+    rng, key1, key2 = jax.random.split(rng, num=3)
+    model = QNet()
+    params0 = model.init(key1, jnp.zeros((48, 48, 9)))
+    params1 = model.init(key2, jnp.zeros((48, 48, 9)))
+
+    play(rng, model, params0, params1)
 
 
 if __name__ == "__main__":

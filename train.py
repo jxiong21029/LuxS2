@@ -23,7 +23,7 @@ class QNet(nn.Module):
     def __call__(self, obs):
         x = nn.Conv(32, kernel_size=(7, 7))(obs)
         x = nn.relu(x)
-        x = nn.Conv(7, kernel_size=(1, 1))(x)
+        x = nn.Conv(8, kernel_size=(1, 1))(x)
         return x
 
 

@@ -1,12 +1,12 @@
 from functools import partial
-from typing import Any, Tuple
+from typing import Any
 
-import chex
 import flax
 import flax.linen as nn
 import flax.training.train_state as train_state
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 import tqdm
 from jux.env import JuxEnv
@@ -70,11 +70,11 @@ def fresh_state(env, rng) -> JuxState:
     state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
 
     def step_factory_placement(_i, args):
-        rng_, s = args
+        rng_, state_ = args
         rng_, key_ = jax.random.split(rng_)
-        action = choose_factory_spawn(key_, s)
+        action = choose_factory_spawn(key_, state_)
         new_s, _ = env.step_factory_placement(
-            state, action, jnp.array([150, 150]), jnp.array([150, 150])
+            state_, action, jnp.array([150, 150]), jnp.array([150, 150])
         )
         return rng_, new_s
 
@@ -88,7 +88,7 @@ def fresh_state(env, rng) -> JuxState:
     return state
 
 
-def predict_target_q(env, ts: TrainState, state: JuxState):
+def predict_target_q(env, ts, state: JuxState):
     obs = get_obs(state)
     utility = ts.apply_fn({"params": ts.params}, obs)
     _, actions, _, _ = step_best(env, state, utility)
@@ -102,54 +102,57 @@ def predict_target_q(env, ts: TrainState, state: JuxState):
     return team_utility[0] - team_utility[1]
 
 
-@partial(jax.jit, static_argnums=0)
-@chex.assert_max_traces(n=1)
-def train_step(
-    env: JuxEnv, ts: TrainState, state: JuxState, noise, rng
-) -> Tuple[TrainState, JuxState]:
-    rng, key = jax.random.split(rng)
-
-    def td_loss(params):
-        obs = get_obs(state)
-        utility = ts.apply_fn({"params": params}, obs)
-        next_state, actions, reward, done = step_best(
-            env,
-            state,
+@partial(jax.jit, static_argnums=2)
+def td_loss(params, ts, env, state, noise, rng):
+    obs = get_obs(state)
+    utility = ts.apply_fn({"params": params}, obs)
+    next_state, actions, reward, done = step_best(
+        env,
+        state,
+        (
             jax.lax.stop_gradient(utility)
-            + noise * jax.random.gumbel(key, utility.shape),
-        )
-
-        selected_utility = utility.at[
-            state.units.pos.x, state.units.pos.y, actions
-        ].get(mode="fill", fill_value=0.0)
-        team_utility = selected_utility.sum(axis=-1)
-        q_pred = team_utility[0] - team_utility[1]
-        q_target = jax.lax.cond(
-            done,
-            lambda: reward,
-            lambda: reward + predict_target_q(env, ts, next_state),
-        )
-        return (
-            (q_pred - jax.lax.stop_gradient(q_target)) ** 2,
-            (next_state, done),
-        )
-
-    grads, (next_state_, done_) = jax.grad(td_loss, has_aux=True)(ts.params)
-    next_state_ = jax.lax.cond(
-        done_,
-        lambda: fresh_state(env, rng),
-        lambda: next_state_,
+            + noise * jax.random.gumbel(rng, utility.shape)
+        ),
     )
-    return grads, next_state_
+
+    selected_utility = utility.at[
+        state.units.pos.x, state.units.pos.y, actions
+    ].get(mode="fill", fill_value=0.0)
+    team_utility = selected_utility.sum(axis=-1)
+    q_pred = team_utility[0] - team_utility[1]
+    q_target = reward + (1 - done) * predict_target_q(env, ts, next_state)
+    return (
+        (q_pred - jax.lax.stop_gradient(q_target)) ** 2,
+        (next_state, done),
+    )
+
+
+# def train_step(
+#     env: JuxEnv, ts: TrainState, state: JuxState, noise, rng
+# ) -> Tuple[TrainState, JuxState]:
+#     rng, key = jax.random.split(rng)
+#
+#     grads, (next_state_, done_) = jax.grad(td_loss, has_aux=True)(ts.params)
+#     next_state_ = jax.lax.cond(
+#         done_,
+#         lambda: fresh_state(env, rng),
+#         lambda: next_state_,
+#     )
+#     return grads, next_state_
 
 
 def main():
     env = JuxEnv()
     rng = jax.random.PRNGKey(42)
 
-    rng, *keys = jax.random.split(rng, num=1001)
-    jitted = jax.jit(fresh_state, static_argnums=0)
-    replay_buffer = [jitted(env, keys[i]) for i in range(1000)]
+    replay_buffer_size = 1000
+    rng, key = jax.random.split(rng)
+    replay_buffer = jax.tree_map(
+        lambda x: np.array(x),
+        jax.vmap(fresh_state, in_axes=(None, 0))(
+            env, jax.random.split(key, num=replay_buffer_size)
+        ),
+    )
 
     rng, key = jax.random.split(rng)
     model = QNet()
@@ -161,40 +164,50 @@ def main():
         slow_params=params,
         tx=optax.adam(1e-3),
     )
-    step_batch = jax.vmap(
-        train_step, in_axes=(None, None, 0, 0), out_axes=(0, 0)
-    )
 
     rng, key = jax.random.split(rng)
-    idx = jax.random.permutation(key, jnp.arange(1000))
-    minibatch_size = 64
 
-    with jax.profiler.trace("/tmp/jax-trace", create_perfetto_link=True):
-        for i in tqdm.trange(len(idx) // minibatch_size):
-            rng, *keys = jax.random.split(rng, num=65)
-            grads, next_state = step_batch(
-                env,
-                ts,
+    jax_bs = jax.vmap(
+        jax.grad(td_loss, has_aux=True), in_axes=(None, None, None, 0, None, 0)
+    )
+
+    minibatch_size = 128
+    import time
+
+    for _ in tqdm.trange(69):
+        start_time = time.perf_counter()
+
+        rng, key = jax.random.split(rng)
+        idx = jax.random.choice(key, replay_buffer_size, (minibatch_size,))
+
+        rng, key = jax.random.split(rng)
+        states = jax.tree_map(lambda x: x[idx], replay_buffer)
+        grads, (next_states, dones) = jax_bs(
+            ts.params,
+            ts,
+            env,
+            states,
+            1.0,
+            jax.random.split(key, num=minibatch_size),
+        )
+
+        grads = jax.tree_map(lambda x: x.mean(axis=0), grads)
+        ts.apply_gradients(grads=grads)
+
+        jax.tree_map(
+            lambda x, y: x.__setitem__(idx, y), replay_buffer, next_states
+        )
+        for j in range(minibatch_size):
+            if dones[j]:
+                print("bughdsh")
+                rng, key = jax.random.split(rng)
                 jax.tree_map(
-                    lambda *xs: jnp.stack(xs, axis=0),
-                    *[
-                        replay_buffer[j]
-                        for j in idx[
-                            i * minibatch_size : (i + 1) * minibatch_size
-                        ]
-                    ],
-                ),
-                jnp.stack(keys, axis=0),
-            )
+                    lambda x, y: x.__setitem__(idx[j], y),
+                    replay_buffer,
+                    fresh_state(env, key),
+                )
 
-            grads = jax.tree_map(lambda x: jnp.mean(x, axis=0), grads)
-            ts.apply_gradients(grads=grads)
-
-            # next_state = jax.tree_map(lambda x: list(x), next_state)
-            for i_, j in enumerate(
-                idx[i * minibatch_size : (i + 1) * minibatch_size]
-            ):
-                replay_buffer[j] = jax.tree_map(lambda x: x[i_], next_state)
+        print(round(minibatch_size / (time.perf_counter() - start_time), 2))
 
 
 if __name__ == "__main__":

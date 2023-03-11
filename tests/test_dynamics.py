@@ -11,11 +11,7 @@ from jux.config import JuxBufferConfig
 from jux.env import JuxEnv
 from jux.utils import load_replay
 
-from dynamics import (
-    get_dig_mask,
-    position_scores,
-    step_best,
-)
+from dynamics import get_dig_mask, position_scores, step_best
 
 
 @pytest.fixture(scope="session")

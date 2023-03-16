@@ -52,5 +52,5 @@ train_dataloader, test_dataloader = DataLoader(train_dataset, batch_size=16, shu
 train(train_dataloader, network)
 print(accuray(test_dataloader, network))
 
-torch.save(resnet.state_dict(), 'saved/resnet.pth')
-torch.save(network.fc.state_dict(), 'saved/linear.bin')
+torch.save(resnet.state_dict(), 'saved/resnet_new.pth')
+torch.save(network.fc.state_dict(), 'saved/linear_new.bin')

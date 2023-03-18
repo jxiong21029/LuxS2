@@ -1,6 +1,8 @@
+import copy
 from functools import partial
 from typing import Any
 
+import chex
 import flax
 import flax.linen as nn
 import flax.training.train_state as train_state
@@ -8,12 +10,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+import ray
 import tqdm
+from jux.config import JuxBufferConfig
 from jux.env import JuxEnv
 from jux.state import State as JuxState
 
-from dynamics import step_best
+from dynamics import fresh_state, step_best
+from evaluation import evaluate, make_replay
 from observation import get_obs
+from utils import Logger
 
 
 class QNet(nn.Module):
@@ -21,9 +27,19 @@ class QNet(nn.Module):
     # current plan is do things VDN-style and just sum the local Q-values
     @nn.compact
     def __call__(self, obs):
-        x = nn.Conv(32, kernel_size=(7, 7))(obs)
-        x = nn.relu(x)
-        x = nn.Conv(8, kernel_size=(1, 1))(x)
+        x = nn.Conv(8, kernel_size=(1, 1))(obs)
+        # x = nn.relu(x)  # B, H, W, C
+        # x = nn.GroupNorm(num_groups=8)(x)
+        #
+        # r = nn.Conv(64, kernel_size=(3, 3))(x)
+        # w = r.mean(axis=(-2, -3))  # B, C
+        # w = nn.Dense(8)(w)
+        # w = nn.relu(w)
+        # w = nn.Dense(64)(w)  # B, C
+        # w = nn.sigmoid(w)
+        #
+        # x = w[..., None, None, :] * r  # B, H, W, C
+        # x = nn.Conv(8, kernel_size=(1, 1))(x)
         return x
 
 
@@ -52,107 +68,130 @@ class TrainState(train_state.TrainState):
         )
 
 
-def choose_factory_spawn(rng, state: JuxState):
-    spawns_mask = state.board.valid_spawns_mask
-    selected = jax.random.choice(
-        rng, 48 * 48, p=spawns_mask.ravel() / spawns_mask.sum()
-    )
-    coords = jnp.array([selected // 48, selected % 48], dtype=jnp.int8)
-    return jnp.stack([coords, coords], axis=0)
+vmapped_obs = jax.vmap(get_obs)
+vmapped_step_best = jax.vmap(
+    jax.jit(step_best, static_argnums=0), in_axes=(None, 0, 0)
+)
 
 
-def fresh_state(env, rng) -> JuxState:
-    rng, key = jax.random.split(rng)
-    seed = jax.random.randint(key, (), 0, 2**16)
-
-    state = env.reset(seed)
-
-    state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
-
-    def step_factory_placement(_i, args):
-        rng_, state_ = args
-        rng_, key_ = jax.random.split(rng_)
-        action = choose_factory_spawn(key_, state_)
-        new_s, _ = env.step_factory_placement(
-            state_, action, jnp.array([150, 150]), jnp.array([150, 150])
-        )
-        return rng_, new_s
-
-    rng, key = jax.random.split(rng)
-    _, state = jax.lax.fori_loop(
-        0,
-        2 * state.board.factories_per_team.astype(jnp.int32),
-        step_factory_placement,
-        (key, state),
-    )
-    return state
-
-
-def predict_target_q(env, ts, state: JuxState):
-    obs = get_obs(state)
+def predict_target_q(env, ts, states: JuxState):
+    obs = vmapped_obs(states)
+    chex.assert_shape(obs, (obs.shape[0], 48, 48, 9))
     utility = ts.apply_fn({"params": ts.params}, obs)
-    _, actions, _, _ = step_best(env, state, utility)
+    _, actions, _, _ = vmapped_step_best(env, states, utility)
+    # scores = utility.at[states.units.pos.x, states.units.pos.y].get(
+    #     mode="fill", fill_value=0
+    # )
+    # actions = jnp.zeros(
+    #     (obs.shape[0], 2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
+    # )
+    # actions = actions.at[:, 0].set(
+    #     jnp.argmax(scores[:, 0], axis=-1).astype(jnp.int8)
+    # )
+    # actions = actions.at[:, 1].set(
+    #     jnp.argmin(scores[:, 1], axis=-1).astype(jnp.int8)
+    # )
 
     # double q-learning style: select actions with fast, set target w/ slow
     slow_utility = ts.apply_fn({"params": ts.slow_params}, obs)
+    chex.assert_shape(slow_utility, (obs.shape[0], 48, 48, 8))
+    chex.assert_shape(actions, (obs.shape[0], 2, env.buf_cfg.MAX_N_UNITS))
     selected_utility = slow_utility.at[
-        state.units.pos.x, state.units.pos.y, actions
-    ].get(mode="fill", fill_value=0.0)
-    team_utility = selected_utility.sum(axis=-1)
-    return team_utility[0] - team_utility[1]
+        jnp.arange(obs.shape[0])[:, None, None],
+        states.units.pos.x,
+        states.units.pos.y,
+        actions,
+    ].get(
+        mode="fill", fill_value=0.0
+    )  # B, 2, U
+    chex.assert_shape(
+        selected_utility, (obs.shape[0], 2, env.buf_cfg.MAX_N_UNITS)
+    )
+    return selected_utility.mean(axis=(-1, -2))
 
 
 @partial(jax.jit, static_argnums=2)
-def td_loss(params, ts, env, state, noise, rng):
-    obs = get_obs(state)
+def td_loss(params, ts, env, states, noise, rng):
+    obs = vmapped_obs(states)
+    # utility = ts.apply_fn({"params": params}, obs)
+    # next_states, actions, rewards, dones = vmapped_step_best(
+    #     env,
+    #     states,
+    #     (
+    #         jax.lax.stop_gradient(utility)
+    #         + noise * jax.random.gumbel(rng, utility.shape)
+    #     ),
+    # )
+    # scores = utility.at[states.units.pos.x, states.units.pos.y].get(
+    #     mode="fill", fill_value=0
+    # )
+    # actions = jnp.zeros(
+    #     (obs.shape[0], 2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
+    # )
+    # actions = actions.at[:, 0].set(
+    #     jnp.argmax(scores[:, 0], axis=-1).astype(jnp.int8)
+    # )
+    # actions = actions.at[:, 1].set(
+    #     jnp.argmin(scores[:, 1], axis=-1).astype(jnp.int8)
+    # )
+
+    # selected_utility = utility.at[
+    #     jnp.arange(obs.shape[0])[:, None, None],
+    #     states.units.pos.x,
+    #     states.units.pos.y,
+    #     actions,
+    # ].get(mode="fill", fill_value=0.0)
+    # q_preds = selected_utility.mean(axis=(-1, -2))
+    #
+    # # TODO restore
+    # # q_target = reward + (1 - done) * predict_target_q(env, ts, next_state)
+    # # next_q = predict_target_q(env, ts, next_states)
+    # # chex.assert_shape(next_q, (obs.shape[0],))
+    # # q_targets = rewards + (1 - dones) * 0.99 * next_q  # TODO restore
+    # q_targets = ((actions == 2).sum(axis=(1, 2)) - (actions == 4).sum(axis=(1, 2))) / 1000
+    # chex.assert_shape(q_targets, (obs.shape[0],))
+    #
+    # loss = jnp.mean((q_preds - jax.lax.stop_gradient(q_targets)) ** 2)
+    # return (
+    #     loss,
+    #     (next_states, dones, q_preds, q_targets),
+    # )
     utility = ts.apply_fn({"params": params}, obs)
-    next_state, actions, reward, done = step_best(
-        env,
-        state,
-        (
-            jax.lax.stop_gradient(utility)
-            + noise * jax.random.gumbel(rng, utility.shape)
-        ),
-    )
-
-    selected_utility = utility.at[
-        state.units.pos.x, state.units.pos.y, actions
-    ].get(mode="fill", fill_value=0.0)
-    team_utility = selected_utility.sum(axis=-1)
-    q_pred = team_utility[0] - team_utility[1]
-    q_target = reward + (1 - done) * predict_target_q(env, ts, next_state)
-    return (
-        (q_pred - jax.lax.stop_gradient(q_target)) ** 2,
-        (next_state, done),
-    )
+    loss = (-utility[..., 2] + utility[..., 4]).mean() + 0.1 * (
+        utility**2
+    ).mean()
+    return loss
 
 
-# def train_step(
-#     env: JuxEnv, ts: TrainState, state: JuxState, noise, rng
-# ) -> Tuple[TrainState, JuxState]:
-#     rng, key = jax.random.split(rng)
-#
-#     grads, (next_state_, done_) = jax.grad(td_loss, has_aux=True)(ts.params)
-#     next_state_ = jax.lax.cond(
-#         done_,
-#         lambda: fresh_state(env, rng),
-#         lambda: next_state_,
-#     )
-#     return grads, next_state_
+jitted_step_best = jax.jit(step_best, static_argnums=0)
+
+
+# returns a batched state with a size n_timesteps batch dimension
+def explore(rng, env, n_timesteps, verbose=False) -> JuxState:
+    rng, key = jax.random.split(rng)
+
+    states = []
+    curr = fresh_state(env, key)
+    for _ in tqdm.trange(n_timesteps) if verbose else range(n_timesteps):
+        states.append(curr)
+
+        rng, key = jax.random.split(rng)
+        curr, _, _, done = jitted_step_best(
+            env, curr, jax.random.gumbel(key, (48, 48, 8))
+        )
+        if done:
+            rng, key = jax.random.split(rng)
+            curr = fresh_state(env, key)
+    return jax.tree_map(lambda *xs: np.stack(xs, axis=0), *states)
 
 
 def main():
-    env = JuxEnv()
+    env = JuxEnv(buf_cfg=JuxBufferConfig(MAX_N_UNITS=250))
     rng = jax.random.PRNGKey(42)
 
     replay_buffer_size = 1000
     rng, key = jax.random.split(rng)
-    replay_buffer = jax.tree_map(
-        lambda x: np.array(x),
-        jax.vmap(fresh_state, in_axes=(None, 0))(
-            env, jax.random.split(key, num=replay_buffer_size)
-        ),
-    )
+    replay_buffer = explore(key, env, replay_buffer_size, verbose=True)
 
     rng, key = jax.random.split(rng)
     model = QNet()
@@ -164,50 +203,90 @@ def main():
         slow_params=params,
         tx=optax.adam(1e-3),
     )
+    # logger = Logger()
 
     rng, key = jax.random.split(rng)
 
-    jax_bs = jax.vmap(
-        jax.grad(td_loss, has_aux=True), in_axes=(None, None, None, 0, None, 0)
-    )
-
     minibatch_size = 128
-    import time
 
-    for _ in tqdm.trange(69):
-        start_time = time.perf_counter()
+    rng, key = jax.random.split(rng)
+    # initial_params = copy.deepcopy(ts.params)
+    replay_task = ray.remote(make_replay)
 
+    tasks = []
+    for i in tqdm.trange(1001):
         rng, key = jax.random.split(rng)
         idx = jax.random.choice(key, replay_buffer_size, (minibatch_size,))
 
         rng, key = jax.random.split(rng)
         states = jax.tree_map(lambda x: x[idx], replay_buffer)
-        grads, (next_states, dones) = jax_bs(
-            ts.params,
-            ts,
-            env,
-            states,
-            1.0,
-            jax.random.split(key, num=minibatch_size),
-        )
-
-        grads = jax.tree_map(lambda x: x.mean(axis=0), grads)
-        ts.apply_gradients(grads=grads)
-
-        jax.tree_map(
-            lambda x, y: x.__setitem__(idx, y), replay_buffer, next_states
-        )
-        for j in range(minibatch_size):
-            if dones[j]:
-                print("bughdsh")
-                rng, key = jax.random.split(rng)
-                jax.tree_map(
-                    lambda x, y: x.__setitem__(idx[j], y),
-                    replay_buffer,
-                    fresh_state(env, key),
-                )
-
-        print(round(minibatch_size / (time.perf_counter() - start_time), 2))
+        grads = jax.grad(td_loss)(ts.params, ts, env, states, 10.0, key)
+        ts = ts.apply_gradients(grads=grads)
+        #         noise = 99.9 * np.exp(-i / 100) + 0.1
+        #         (
+        #             vals,
+        #             (next_states, dones, q_pred, q_target),
+        #         ), grads = jax.value_and_grad(td_loss, has_aux=True)(
+        #             ts.params,
+        #             ts,
+        #             env,
+        #             states,
+        #             noise,
+        #             key,
+        #         )
+        #         jax.tree_map(
+        #             lambda x, y: x.__setitem__(idx, y), replay_buffer, next_states
+        #         )
+        #
+        #         logger.log(
+        #             td_loss=vals.mean().item(),
+        #             log_td_loss=np.log(vals).mean().item(),
+        #             rollout_t=states.real_env_steps.mean().item(),
+        #             noise=noise,
+        #             q_pred=q_pred.mean().item(),
+        #             q_target=q_target.mean().item(),
+        #         )
+        #
+        #         grads = jax.tree_map(lambda x: x.mean(axis=0), grads)
+        #         ts = ts.apply_gradients(grads=grads)
+        #
+        #         n_terminal = 0
+        #         for j in range(minibatch_size):
+        #             if dones[j]:
+        #                 rng, key = jax.random.split(rng)
+        #                 jax.tree_map(
+        #                     lambda x, y: x.__setitem__(idx[j], y),
+        #                     replay_buffer,
+        #                     fresh_state(env, key),
+        #                 )
+        #                 n_terminal += 1
+        #         logger.log(env_resets=n_terminal)
+        #
+        if i % 50 == 0:
+            # rng, key = jax.random.split(rng)
+            # temp_logger_1 = Logger()
+            # evaluate(key, 10, temp_logger_1, model, ts.params, initial_params)
+            # temp_logger_2 = Logger()
+            # evaluate(key, 10, temp_logger_2, model, initial_params, ts.params)
+            #
+            # for k in temp_logger_1.cumulative_data.keys():
+            #     logger.cumulative_data["p0_" + k].append(
+            #         temp_logger_1.cumulative_data[k][-1]
+            #     )
+            #     logger.cumulative_data["p1_" + k].append(
+            #         temp_logger_2.cumulative_data[k][-1]
+            #     )
+            #
+            rng, key = jax.random.split(rng)
+            tasks.append(replay_task.remote(
+                key,
+                f"replay_{i}",
+                model,
+                ts.params,
+                ts.params,
+            ))
+            # logger.generate_plots()
+    ray.get(tasks)
 
 
 if __name__ == "__main__":

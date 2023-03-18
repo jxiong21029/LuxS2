@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Tuple
 
 import chex
@@ -216,35 +217,52 @@ def maximize_actions_callback(
         if team == 1:  # unless we want minimum score
             c *= -1
 
-        destinations = unit_pos[:, None] + directions  # N, 5, 2
+        destinations = unit_pos[:, None] + directions
+        chex.assert_shape(destinations, (n, 5, 2))
         in_bounds = (
             (0 <= destinations[..., 0])
             & (destinations[..., 0] < 48)
             & (0 <= destinations[..., 1])
             & (destinations[..., 1] < 48)
-        ).ravel()  # (N*5,) boolean arr -- for each move, bool for in bounds
+        ).ravel()
+        chex.assert_shape(in_bounds, (n * 5,))
 
-        flat_idx = (
-            48 * destinations[..., 0] + destinations[..., 1]
-        ).ravel()  # (N*5,)
+        flat_idx = (48 * destinations[..., 0] + destinations[..., 1]).ravel()
+        chex.assert_shape(flat_idx, (n * 5,))
         # for each move, int in [0, 48^2) -- flattened index of destination
 
         a_lt = coo_array(
             (
                 np.ones(in_bounds.sum()),
-                (flat_idx[in_bounds], np.arange(5 * n)[in_bounds]),
+                (flat_idx[in_bounds], np.arange(n * 5)[in_bounds]),
             ),
-            shape=(48 * 48, 5 * n),
+            shape=(48 * 48, n * 5),
         )
         b_lt = np.ones(48 * 48)
 
-        factory_mask = (factory_action[team] == FactoryAction.BUILD_LIGHT) | (
-            factory_action[team] == FactoryAction.BUILD_HEAVY
-        )
+        built_unit_mask = (
+            factory_action[team] == FactoryAction.BUILD_LIGHT
+        ) | (factory_action[team] == FactoryAction.BUILD_HEAVY)
         b_lt[
-            48 * state.factories.pos.x[team, factory_mask].astype(int)
-            + state.factories.pos.y[team, factory_mask]
+            48 * state.factories.pos.x[team, built_unit_mask].astype(jnp.int32)
+            + state.factories.pos.y[team, built_unit_mask].astype(jnp.int32)
         ] = 0  # don't move onto factory locations where units get built
+
+        chex.assert_shape(
+            state.factories.occupancy, (2, buf_cfg.MAX_N_FACTORIES, 9, 2)
+        )
+
+        # don't move onto other team factory occupancy
+        factory_exists_mask = state.factories.pos.x[1 - team] < INT8_MAX
+        b_lt[
+            48
+            * state.factories.occupancy.x[1 - team, factory_exists_mask]
+            .flatten()
+            .astype(jnp.int32)
+            + state.factories.occupancy.y[1 - team, factory_exists_mask]
+            .flatten()
+            .astype(jnp.int32)
+        ] = 0
 
         destination_rubble = np.zeros((n, 5), dtype=int)
         destination_rubble.ravel()[in_bounds] = state.board.rubble[
@@ -252,6 +270,7 @@ def maximize_actions_callback(
             destinations[..., 1].ravel()[in_bounds],
         ]
         chex.assert_shape(destination_rubble, (n, 5))
+
         unit_types = np.tile(state.units.unit_type[team, :n, None], reps=(5,))
         chex.assert_shape(unit_types, (n, 5))
         power_req = np.where(
@@ -291,17 +310,17 @@ def maximize_actions_callback(
             np.arange(n)[correct_action_type],
             move_directions[correct_action_type],
         ] = 0
-
         power_req += move_rewrite_costs
+
         not_enough_power = (
             np.asarray(state.units.power[team, :n, None]) < power_req
         )
+        not_enough_power[..., 0] = False
         chex.assert_shape(not_enough_power, (n, 5))
 
-        not_enough_power[..., 0] = False
-
-        # n rows for the (each unit must select exactly one move) constraint
-        # 1 final row for the (no out-of-bounds moves may be selected)
+        # n rows for (each unit must select exactly one move) constraint
+        # 1 row for (no out-of-bounds moves may be selected)
+        # 1 row for (no moves where power requirement is not met)
         num_oob = (~in_bounds).sum()
         a_eq = coo_array(
             (
@@ -327,8 +346,8 @@ def maximize_actions_callback(
         )
         b_eq = np.ones(n + 2)
 
-        b_eq[-2] = 0  # sum of OOB moves must be zero
-        b_eq[-1] = 0  # sum of moves w/o enough power must be zero
+        b_eq[n] = 0  # sum of OOB moves must be zero
+        b_eq[n + 1] = 0  # sum of moves w/o enough power must be zero
 
         result = linprog(c, a_lt, b_lt, a_eq, b_eq, method="highs-ds")
         if result.status == 2:
@@ -373,18 +392,20 @@ def get_best_action(env: JuxEnv, state: JuxState, action_scores: jnp.float32):
     scores, dig_best, pickup_best, dropoff_best = position_scores(
         env, state, action_scores
     )
-    selected_idx = jax.pure_callback(
-        maximize_actions_callback,
-        jax.ShapeDtypeStruct(
-            shape=(2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
-        ),
-        env.env_cfg,
-        env.buf_cfg,
-        state,
-        scores,
-        factory_action,
-        vectorized=False,
-    )  # (2, MAX_N_UNITS)
+    # selected_idx = jax.pure_callback(
+    #     maximize_actions_callback,
+    #     jax.ShapeDtypeStruct(
+    #         shape=(2, env.buf_cfg.MAX_N_UNITS), dtype=jnp.int8
+    #     ),
+    #     env.env_cfg,
+    #     env.buf_cfg,
+    #     state,
+    #     scores,
+    #     factory_action,
+    #     vectorized=False,
+    # )  # (2, MAX_N_UNITS)
+    scores = scores * jnp.array([1, -1]).reshape((2, 1, 1))
+    selected_idx = jnp.argmax(scores, axis=-1).astype(jnp.int8)
 
     # heuristic factory behavior: build light robots if possible
     # otherwise, water if it increases lichen and either
@@ -503,34 +524,88 @@ def get_best_action(env: JuxEnv, state: JuxState, action_scores: jnp.float32):
     )
 
     action_arr = jnp.where((selected_idx == 0) & dig_best, 5, selected_idx)
-    action_arr = jnp.where((selected_idx == 0) & dropoff_best, 6, action_arr)
+    action_arr = jnp.where((selected_idx == 0) & pickup_best, 6, action_arr)
+    action_arr = jnp.where((selected_idx == 0) & dropoff_best, 7, action_arr)
     return jux_action, action_arr
 
 
-def step_best(
-    env: JuxEnv, state: JuxState, action_scores: JaxArray
-) -> Tuple[JuxState, jnp.int8, jnp.float32, jnp.bool_]:
-    action, action_arr = get_best_action(env, state, action_scores)
-
+def step(state, action):
     new_state = state._step_late_game(action)
 
     # old_potential = state.n_units[0] - state.n_units[1]
     # new_potential = new_state.n_units[0] - new_state.n_units[1]
     # reward = new_potential - old_potential
 
-    done = (new_state.n_factories == 0).any() | (
-        new_state.real_env_steps >= 1000
-    )
-    reward = jnp.where(
-        done,
-        jnp.where(
-            state.team_lichen_score()[0] == state.team_lichen_score()[1],
-            0.5,
-            (
-                state.team_lichen_score()[0] > state.team_lichen_score()[1]
-            ).astype(float),
-        ),
-        0.0,
-    )
+    # done = (new_state.n_factories == 0).any() | (
+    #     new_state.real_env_steps >= 1000
+    # )
+    # reward = jnp.where(
+    #     done,
+    #     jnp.where(
+    #         state.team_lichen_score()[0] == state.team_lichen_score()[1],
+    #         0.5,
+    #         (
+    #             state.team_lichen_score()[0] > state.team_lichen_score()[1]
+    #         ).astype(float),
+    #     ),
+    #     0.0,
+    # )
 
+    # sign-of-life task: reward = sum of agent coordinates
+    # reward = (
+    #     ((new_state.units.pos.x - 24) + (new_state.units.pos.y - 24))
+    #     / 24
+    #     * (new_state.units.pos.x < INT8_MAX)
+    #     / 1000
+    # ).sum()
+
+    # TODO: probe tasks
+    reward = (new_state.units.pos.x - state.units.pos.x).mean()
+    done = new_state.real_env_steps >= 150
+
+    return new_state, reward, done
+
+
+def step_best(
+    env: JuxEnv, state: JuxState, action_scores: JaxArray
+) -> Tuple[JuxState, jnp.int8, jnp.float32, jnp.bool_]:
+    action, action_arr = get_best_action(env, state, action_scores)
+    new_state, reward, done = step(state, action)
     return new_state, action_arr, reward, done
+
+
+def choose_factory_spawn(rng, state: JuxState):
+    spawns_mask = state.board.valid_spawns_mask
+    selected = jax.random.choice(
+        rng, 48 * 48, p=spawns_mask.ravel() / spawns_mask.sum()
+    )
+    coords = jnp.array([selected // 48, selected % 48], dtype=jnp.int8)
+    return jnp.stack([coords, coords], axis=0)
+
+
+@partial(jax.jit, static_argnums=0)
+def fresh_state(env, rng) -> JuxState:
+    rng, key = jax.random.split(rng)
+    seed = jax.random.randint(key, (), 0, 2**16)
+
+    state = env.reset(seed)
+
+    state, _ = env.step_bid(state, jnp.zeros(2), jnp.arange(2))
+
+    def step_factory_placement(_i, args):
+        rng_, state_ = args
+        rng_, key_ = jax.random.split(rng_)
+        action = choose_factory_spawn(key_, state_)
+        new_s, _ = env.step_factory_placement(
+            state_, action, jnp.array([150, 150]), jnp.array([150, 150])
+        )
+        return rng_, new_s
+
+    rng, key = jax.random.split(rng)
+    _, state = jax.lax.fori_loop(
+        0,
+        2 * state.board.factories_per_team.astype(jnp.int32),
+        step_factory_placement,
+        (key, state),
+    )
+    return state

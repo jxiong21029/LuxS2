@@ -1,6 +1,6 @@
+.DS_Store
 .idea
-replay.json
 __pycache__
-bandits/figures
+figures
 replays/*.csv
 replays/*.dat

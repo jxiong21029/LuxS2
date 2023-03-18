@@ -1,6 +1,5 @@
 import numpy as np
 
-from .. import utils
 from ..utils import copeland_regret
 from .common import (
     Problem,

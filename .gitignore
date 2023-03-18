@@ -2,6 +2,5 @@
 replay.json
 __pycache__
 bandits/figures
-initial_prediction/replays_baseline.zip
-initial_prediction/replays_baseline
-initial_prediction/saved
+replays/*.csv
+replays/*.dat

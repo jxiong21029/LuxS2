@@ -2,6 +2,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from action_selection import (
+    get_dig_mask,
+    maximize_actions_callback,
+    position_scores,
+    step_best,
+)
 from jux.actions import (
     JuxAction,
     bid_action_from_lux,
@@ -9,13 +15,6 @@ from jux.actions import (
 )
 from jux.env import JuxEnv
 from jux.utils import load_replay
-
-from action_selection import (
-    get_dig_mask,
-    maximize_actions_callback,
-    position_scores,
-    step_best,
-)
 
 
 @pytest.fixture

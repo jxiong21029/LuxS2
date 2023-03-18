@@ -1,0 +1,25 @@
+name: LuxS2
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - black
+  - isort
+  - matplotlib
+  - pandas
+  - polars
+  - pytest
+  - python-blosc
+  - pytorch
+  - pytorch-cuda
+  - requests
+  - seaborn
+  - torchvision
+  - tqdm
+  - pip
+  - pip:
+      - setuptools==59.8.0
+      - luxai_s2
+      - ray[default]
+      - pyarrow

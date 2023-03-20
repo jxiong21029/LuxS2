@@ -5,7 +5,7 @@ import random
 import time
 from collections import defaultdict
 
-import blosc
+import blosc2
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -146,12 +146,12 @@ def save_episode(epid_):
     re = requests.post(EPISODE_URL, json={"episodeId": int(epid_)})
 
     replay = re.json()
-    with open(f"{epid_}.dat", "wb") as f:
-        f.write(blosc.compress(json.dumps(replay).encode()))
+    with open(f"raw/{epid_}.dat", "wb") as f:
+        f.write(blosc2.compress(json.dumps(replay).encode()))
 
     info = create_info_json(epid_)
-    with open(f"{epid_}_info.dat", "wb") as f:
-        f.write(blosc.compress(json.dumps(info).encode()))
+    with open(f"raw/{epid_}_info.json", "w") as f:
+        json.dump(info, f)
 
 
 t = 1
@@ -165,6 +165,7 @@ for k in subid_to_epid:
 seen_episodes = set(seen_episodes)
 
 subids = list(subid_to_epid.keys())
+os.makedirs("raw/", exist_ok=True)
 while True:
     subid = random.choice(subids)
 
@@ -179,7 +180,7 @@ while True:
 
     t += 1
     count += 1
-    if os.path.exists(os.path.join(f"{epid}.dat")):
+    if os.path.exists(f"raw/{epid}.dat"):
         print(
             f"{count: >4}: saved episode #{epid} from submission "
             f"{subid}(elo={round(subid_to_elo[subid])})"

@@ -2,6 +2,7 @@
 .idea
 __pycache__
 figures
+replay_data.zarr
 replays/*.csv
-replays/*/*.dat
+replays/*/*.bl2
 replays/*/*.json

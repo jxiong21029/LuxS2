@@ -11,13 +11,13 @@ dependencies:
   - pandas
   - polars
   - pytest
-  - python-blosc
   - pytorch
   - pytorch-cuda
   - requests
   - seaborn
   - torchvision
   - tqdm
+  - zarr
   - pip
   - pip:
       - setuptools==59.8.0

@@ -146,7 +146,7 @@ def save_episode(epid_):
     re = requests.post(EPISODE_URL, json={"episodeId": int(epid_)})
 
     replay = re.json()
-    with open(f"raw/{epid_}.dat", "wb") as f:
+    with open(f"raw/{epid_}.bl2", "wb") as f:
         f.write(blosc2.compress(json.dumps(replay).encode()))
 
     info = create_info_json(epid_)
@@ -180,7 +180,7 @@ while True:
 
     t += 1
     count += 1
-    if os.path.exists(f"raw/{epid}.dat"):
+    if os.path.exists(f"raw/{epid}.bl2"):
         print(
             f"{count: >4}: saved episode #{epid} from submission "
             f"{subid}(elo={round(subid_to_elo[subid])})"

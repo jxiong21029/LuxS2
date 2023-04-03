@@ -6,3 +6,5 @@ replay_data.zarr
 replays/*.csv
 replays/*/*.bl2
 replays/*/*.json
+replays/replay_data.zarr.zip
+initial_prediction

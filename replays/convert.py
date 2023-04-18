@@ -8,7 +8,8 @@ import numpy as np
 import tqdm
 import zarr
 from luxai_s2 import LuxAI_S2
-from preprocessing import get_actions, get_obs
+
+from submission.preprocessing import get_actions, get_obs
 
 
 def convert_replay(filename):

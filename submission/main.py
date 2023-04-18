@@ -5,16 +5,9 @@ from typing import Dict
 
 from agent import Agent
 from lux.config import EnvConfig
-from lux.kit import (
-    GameState,
-    from_json,
-    obs_to_game_state,
-    process_action,
-    process_obs,
-    to_json,
-)
+from lux.kit import process_action, process_obs
 
-### DO NOT REMOVE THE FOLLOWING CODE ###
+# DO NOT REMOVE THE FOLLOWING CODE
 agent_dict = (
     dict()
 )  # store potentially multiple dictionaries as kaggle imports code directly
@@ -34,6 +27,7 @@ def agent_fn(observation, configurations):
         env_cfg = EnvConfig.from_dict(configurations["env_cfg"])
         agent_dict[player] = Agent(player, env_cfg)
         agent_prev_obs[player] = dict()
+        agent = agent_dict[player]
     agent = agent_dict[player]
     obs = process_obs(
         player, agent_prev_obs[player], step, json.loads(observation.obs)

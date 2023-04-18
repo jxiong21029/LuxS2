@@ -80,11 +80,11 @@ def convert_replay(filename):
     l1 = group.attrs["length"]
     l2 = l1 + obs_meta.shape[0]
 
-    group["obs_meta"][l1 : l2] = obs_meta
-    group["obs_tiles"][l1 : l2] = obs_tiles
-    group["action_types"][l1 : l2] = action_types
-    group["action_resources"][l1 : l2] = action_resources
-    group["action_amounts"][l1 : l2] = action_amounts
+    group["obs_meta"][l1:l2] = obs_meta
+    group["obs_tiles"][l1:l2] = obs_tiles
+    group["action_types"][l1:l2] = action_types
+    group["action_resources"][l1:l2] = action_resources
+    group["action_amounts"][l1:l2] = action_amounts
 
     group.attrs["length"] = l2
 

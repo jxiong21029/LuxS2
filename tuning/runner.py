@@ -10,13 +10,16 @@ from tuning.tuning import Tuner
 
 DATASET = "replays/replay_data_zarr/replay_data.zarr"
 LOADER_WORKERS = 1
-EPOCHS = 10
+EPOCHS = 1
 
 def trial(config):
     missing = ({"lr", "weight_decay", "batch_size"} - config.keys())
     assert not missing, f"missing keys: {missing}"
 
-    data = LuxAIDataset(zarr.open(DATASET))
+    array = zarr.open(DATASET)
+    # for testing
+    array["action_amounts"] = array["action_amounts"][:1000]
+    data = LuxAIDataset(array)
     loader = DataLoader(
         data,
         batch_size=config["batch_size"],
@@ -52,12 +55,13 @@ def main():
         trial_fn=trial,
         metric="loss",
         mode="min",
-        throw_on_exception=True
+        throw_on_exception=True,
+        trial_gpus=1,
     )
     params = {
-        "batch_size": [16, 32],
+        "batch_size": [16],
         "lr": [1e-3, 1e-2],
-        "weight_decay": [1e-5, 1e-4],
+        "weight_decay": [1e-5],
     }
 
     for config in itertools.product(*params.values()):

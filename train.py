@@ -44,16 +44,37 @@ class Trainer:
         self.network = network
         self.logger = logger
         self.params = {
-            'lr': lr,
-            'weight_decay': weight_decay,
+            "lr": lr,
+            "weight_decay": weight_decay,
         }
 
         self.optimizer = torch.optim.Adam(
             network.parameters(), lr=lr, weight_decay=weight_decay
         )
 
+    def accuracy(self):
+        self.network.eval()
+        for example in self.dataloader:
+            (
+                board,
+                unit_mask,
+                action_types,
+                action_resources,
+                action_amounts,
+            ) = example
+            (
+                predicted_types,
+                predicted_resources,
+                predicted_quantities,
+            ) = network(board.to(device))
+            predicted_types, predicted_resources = torch.argmax(
+                predicted_types, 2
+            ), torch.argmax(predicted_resources, 2)
+            type_correct = torch.sum((predicted_types == predicted_resources & unit_mask > 0).astype(int))
+            
+
     def train(self):
-        network.train()
+        self.network.train()
 
         for example in self.dataloader:
             self.optimizer.zero_grad()

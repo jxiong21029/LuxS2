@@ -12,3 +12,4 @@ initial_prediction
 .venv
 checkpoint.pth
 replay.json
+tuner.ckpt

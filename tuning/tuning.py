@@ -15,7 +15,7 @@ import numpy as np
 import ray
 import seaborn as sns
 
-from logger import Logger
+from tuning.logger import Logger
 
 
 def iqm(scores: List[float]):

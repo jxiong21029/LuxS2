@@ -68,7 +68,7 @@ class Trainer:
                 predicted_types,
                 predicted_resources,
                 predicted_quantities,
-            ) = network(board.to(device))
+            ) = self.network(board.to(device))
             predicted_types, predicted_resources = torch.argmax(
                 predicted_types, 3
             ), torch.argmax(predicted_resources, 3)
@@ -93,9 +93,9 @@ class Trainer:
                 predicted_types,
                 predicted_resources,
                 predicted_quantities,
-            ) = network(board.to(device))
-            # predicted_types is batch_size x 48 x 48 x 14
-            # predicted_resources is batch size x 48 x 48 x 5
+            ) = self.network(board.to(device))
+            # predicted_types is batch_size x 48 x 48 x 13 (13 action types)
+            # predicted_resources is batch size x 48 x 48 x 4 (4 possible resources)
             # predicted_quantites is batch_size x 48 x 48 x 1 (regression)
 
             ce_loss = torch.mean(

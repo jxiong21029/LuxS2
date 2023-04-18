@@ -2,21 +2,18 @@ import itertools
 import torch
 import zarr
 
-from logger import Logger
 from model import LuxAIModel
 from torch.utils.data import DataLoader
 from train import LuxAIDataset, Trainer
+from tuning.logger import Logger
 from tuning.tuning import Tuner
 
 DATASET = "replays/replay_data_zarr/replay_data.zarr"
-WORKERS = 1
+LOADER_WORKERS = 1
 EPOCHS = 10
 
 def trial(config):
-    missing = (
-        {"lr", "weight_decay", "batch_size", "trial"}
-        - config.keys(),
-    )
+    missing = ({"lr", "weight_decay", "batch_size"} - config.keys())
     assert not missing, f"missing keys: {missing}"
 
     data = LuxAIDataset(zarr.open(DATASET))
@@ -26,7 +23,7 @@ def trial(config):
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
         drop_last=True,
-        num_workers=WORKERS,
+        num_workers=LOADER_WORKERS,
     )
     network = LuxAIModel()
     logger = Logger()
@@ -48,10 +45,15 @@ def main():
         "batch_size": "nuisance",
         "lr": "nuisance",
         "weight_decay": "science",
-        "trial": "id",
     }
 
-    tuner = Tuner(spec, trial_fn=trial, metric="loss", mode="min")
+    tuner = Tuner(
+        spec,
+        trial_fn=trial,
+        metric="loss",
+        mode="min",
+        throw_on_exception=True
+    )
     params = {
         "batch_size": [16, 32],
         "lr": [1e-3, 1e-2],
@@ -63,3 +65,6 @@ def main():
         tuner.add(config)
 
     tuner.run()
+
+if __name__ == "__main__":
+    main()

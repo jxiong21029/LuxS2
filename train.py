@@ -5,6 +5,7 @@ import zarr
 from torch.utils.data import DataLoader, Dataset
 
 from model import LuxAIModel
+from tuning.logger import Logger
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 print(device)
@@ -30,7 +31,14 @@ class LuxAIDataset(Dataset):
         )
 
 
-def train(dataloader, network, lr=1e-5, weight_decay=0, epochs=10):
+def train(
+    dataloader,
+    network,
+    lr=1e-5,
+    weight_decay=0,
+    epochs=10,
+    logger: Logger | None=None
+):
     network.train()
     optimizer = torch.optim.Adam(
         network.parameters(), lr=lr, weight_decay=weight_decay
@@ -81,7 +89,10 @@ def train(dataloader, network, lr=1e-5, weight_decay=0, epochs=10):
             l.backward()
             optimizer.step()
 
-        print("Epoch={}, Total Loss={}".format(i, total))
+        if logger is None:
+            print("Epoch={}, Total Loss={}".format(i, total))
+        else:
+            logger.log(epoch=i, loss=total)
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ class Trainer:
     ):
         self.dataloader = dataloader
         self.network = network
+        self.network.to(device)
         self.logger = logger
         self.params = {
             "lr": lr,
@@ -54,6 +55,7 @@ class Trainer:
 
     def accuracy(self):
         self.network.eval()
+        type_correct, total_type = 0, 0
         for example in self.dataloader:
             (
                 board,
@@ -68,14 +70,16 @@ class Trainer:
                 predicted_quantities,
             ) = network(board.to(device))
             predicted_types, predicted_resources = torch.argmax(
-                predicted_types, 2
-            ), torch.argmax(predicted_resources, 2)
-            type_correct = torch.sum((predicted_types == predicted_resources & unit_mask > 0).astype(int))
+                predicted_types, 3
+            ), torch.argmax(predicted_resources, 3)
+            type_correct += torch.sum((predicted_types == action_types.to(device).long() * unit_mask.to(device)))
+            total_type += torch.sum((unit_mask > 0).long())
+        self.logger.push(accuracy=type_correct / total_type)
+        self.logger.step()
             
 
     def train(self):
         self.network.train()
-
         for example in self.dataloader:
             self.optimizer.zero_grad()
             (
@@ -90,8 +94,8 @@ class Trainer:
                 predicted_resources,
                 predicted_quantities,
             ) = network(board.to(device))
-            # predicted_types is batch_size x 48 x 48 x 13 (13 action types)
-            # predicted_resources is batch size x 48 x 48 x 4 (4 possible resources)
+            # predicted_types is batch_size x 48 x 48 x 14
+            # predicted_resources is batch size x 48 x 48 x 5
             # predicted_quantites is batch_size x 48 x 48 x 1 (regression)
 
             ce_loss = torch.mean(
@@ -136,3 +140,4 @@ if __name__ == "__main__":
 
     trainer = Trainer(train_dataloader, network, Logger())
     trainer.train()
+    trainer.accuracy()

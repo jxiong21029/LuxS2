@@ -15,10 +15,10 @@ class LuxAIModel(nn.Module):
         # board is of shape batch_size x 35 x 48 x 48
         predicted_types = (
             self.types_conv(board).transpose(1, 3).transpose(1, 2)
-        )  # shape is now batch_size x 48 x 48 x 13
+        )  # shape is now batch_size x 48 x 48 x 14
         predicted_resources = (
             self.resources_conv(board).transpose(1, 3).transpose(1, 2)
-        )  # shape is now batch_size x 48 x 48 x 4
+        )  # shape is now batch_size x 48 x 48 x 5
         predicted_quantities = (
             self.quantities_conv(board)
             .transpose(1, 3)

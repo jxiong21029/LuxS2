@@ -31,24 +31,32 @@ class LuxAIDataset(Dataset):
         )
 
 
-def train(
-    dataloader,
-    network,
-    lr=1e-5,
-    weight_decay=0,
-    epochs=10,
-    logger: Logger | None=None
-):
-    network.train()
-    optimizer = torch.optim.Adam(
-        network.parameters(), lr=lr, weight_decay=weight_decay
-    )
-    network.to(device)
+class Trainer:
+    def __init__(
+        self,
+        dataloader,
+        network,
+        logger,
+        lr=1e-3,
+        weight_decay=0,
+    ):
+        self.dataloader = dataloader
+        self.network = network
+        self.logger = logger
+        self.params = {
+            'lr': lr,
+            'weight_decay': weight_decay,
+        }
 
-    for i in range(epochs):
-        total = 0
-        for example in dataloader:
-            optimizer.zero_grad()
+        self.optimizer = torch.optim.Adam(
+            network.parameters(), lr=lr, weight_decay=weight_decay
+        )
+
+    def train(self):
+        network.train()
+
+        for example in self.dataloader:
+            self.optimizer.zero_grad()
             (
                 board,
                 unit_mask,
@@ -84,15 +92,11 @@ def train(
                 torch.square(predicted_quantities - action_amounts.to(device))
             )
             l = ce_loss + mse_loss
-            total += l
 
             l.backward()
-            optimizer.step()
+            self.optimizer.step()
 
-        if logger is None:
-            print("Epoch={}, Total Loss={}".format(i, total))
-        else:
-            logger.log(epoch=i, loss=total)
+            self.logger.push(loss=l)
 
 
 if __name__ == "__main__":
@@ -109,4 +113,5 @@ if __name__ == "__main__":
     )
     network = LuxAIModel()
 
-    train(train_dataloader, network)
+    trainer = Trainer(train_dataloader, network, Logger())
+    trainer.train()

@@ -22,9 +22,17 @@ class LuxAIDataset(Dataset):
         unit_mask = (
             np.sum(self.array["obs_tiles"][idx][9:13, :, :], 0) > 0
         ).astype(int)
+
+        # we want a mask for when action type is 5-10
+        resource_mask = (
+            (5 <= self.array["action_types"][idx]) *
+            (self.array["action_types"][idx] <= 10)
+        )
+
         return (
             self.array["obs_tiles"][idx],
             unit_mask,
+            resource_mask,
             self.array["action_types"][idx],
             self.array["action_resources"][idx],
             self.array["action_amounts"][idx],
@@ -60,19 +68,23 @@ class Trainer:
             (
                 board,
                 unit_mask,
+                _,
                 action_types,
-                action_resources,
-                action_amounts,
+                _,
+                _,
             ) = example
             (
                 predicted_types,
-                predicted_resources,
-                predicted_quantities,
+                _,
+                _,
             ) = self.network(board.to(device))
-            predicted_types, predicted_resources = torch.argmax(
-                predicted_types, 3
-            ), torch.argmax(predicted_resources, 3)
-            type_correct += torch.sum((predicted_types == action_types.to(device).long() * unit_mask.to(device)))
+            predicted_types = torch.argmax(predicted_types, 3)
+            type_correct += torch.sum(
+                predicted_types == (
+                    action_types.to(device).long()
+                    * unit_mask.to(device)
+                )
+            )
             total_type += torch.sum((unit_mask > 0).long())
         self.logger.push(accuracy=type_correct / total_type)
         self.logger.step()
@@ -85,6 +97,7 @@ class Trainer:
             (
                 board,
                 unit_mask,
+                resource_mask,
                 action_types,
                 action_resources,
                 action_amounts,
@@ -108,13 +121,21 @@ class Trainer:
             ) + torch.mean(
                 nn.functional.cross_entropy(
                     predicted_resources.transpose(1, 3).transpose(2, 3),
-                    action_resources.long().to(device),
+                    (
+                        action_resources.long().to(device)
+                        * resource_mask.to(device)
+                    ),
                     reduction="none",
                 )
                 * unit_mask.to(device)
             )
             mse_loss = torch.mean(
-                torch.square(predicted_quantities - action_amounts.to(device))
+                torch.square(
+                    predicted_quantities
+                    - action_amounts.to(device)
+                    * unit_mask.to(device)
+                    / 1000
+                )
             )
             l = ce_loss + mse_loss
 

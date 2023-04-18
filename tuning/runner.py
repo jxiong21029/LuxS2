@@ -10,7 +10,7 @@ from tuning.tuning import Tuner
 
 DATASET = "replays/replay_data_zarr/replay_data.zarr"
 LOADER_WORKERS = 1
-EPOCHS = 1
+EPOCHS = 4
 
 def trial(config):
     missing = ({"lr", "weight_decay", "batch_size"} - config.keys())

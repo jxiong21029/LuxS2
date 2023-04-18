@@ -11,3 +11,4 @@ replays/replay_data.zarr.zip
 initial_prediction
 .venv
 checkpoint.pth
+replay.json

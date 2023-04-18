@@ -123,6 +123,8 @@ class Trainer:
 
             self.logger.push(loss=l)
 
+        self.logger.step()
+
 
 if __name__ == "__main__":
     # keys: action_amounts, action_resources, action_types, obs_meta, obs_tiles

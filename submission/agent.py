@@ -2,8 +2,8 @@ import sys
 
 import numpy as np
 from lux.config import EnvConfig
-from lux.kit import GameState, obs_to_game_state
 from lux.utils import direction_to, my_turn_to_place_factory
+from luxai_s2.state import State
 from preprocessing import get_obs
 
 
@@ -21,7 +21,8 @@ class Agent:
             return dict(faction="AlphaStrike", bid=0)
         else:
             # factory placement period
-            game_state = obs_to_game_state(step, self.env_cfg, obs)
+            game_state = State.from_obs(obs, self.env_cfg)
+            print(game_state.board.__dict__.keys(), file=sys.stderr)
 
             # how many factories you have left to place
             factories_to_place = game_state.teams[
@@ -45,7 +46,5 @@ class Agent:
 
     def act(self, step: int, obs, remainingOverageTime: int = 60):
         actions = dict()
-
-        game_state: GameState = obs_to_game_state(step, self.env_cfg, obs)
-
-        obs = get_obs()
+        obs = State.from_obs(obs, self.env_cfg)
+        return actions

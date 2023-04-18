@@ -31,13 +31,15 @@ def train(dataloader, network, lr=1e-5, weight_decay=0, epochs=10):
         for example in dataloader:
             optimizer.zero_grad()
             board, unit_mask, action_types, action_resources, action_amounts = example
-            regression_true = torch.cat((torch.unsqueeze(action_resources, 3), torch.unsqueeze(action_amounts, 3)), 3)
-            predicted_types, predicted_quantities = network(board.to(device))
+            predicted_types, predicted_resources, predicted_quantities = network(board.to(device))
             # predicted_types is batch_size x 48 x 48 x 13 (13 action types)
-            # predicted_quantities is batch size x 48 x 48 x 2 (one channel for action_resources, one for action_amounts)
+            # predicted_resources is batch size x 48 x 48 x 4 (4 possible resources)
+            # predicted_quantites is batch_size x 48 x 48 x 1 (regression)
 
-            ce_loss = torch.mean(nn.functional.cross_entropy(predicted_types.transpose(1, 3).transpose(2, 3), action_types.long().to(device), reduction='none') * unit_mask.to(device)) 
-            mse_loss = torch.mean(torch.square(predicted_quantities - regression_true.to(device)))
+            ce_loss = torch.mean(
+                nn.functional.cross_entropy(predicted_types.transpose(1, 3).transpose(2, 3), action_types.long().to(device), reduction='none') * unit_mask.to(device)) + torch.mean(
+                nn.functional.cross_entropy(predicted_resources.transpose(1, 3).transpose(2, 3), action_resources.long().to(device), reduction='none') * unit_mask.to(device))
+            mse_loss = torch.mean(torch.square(predicted_quantities - action_amounts.to(device)))
             l = ce_loss + mse_loss
             total += l
 

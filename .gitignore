@@ -10,8 +10,5 @@ replays/*/*.json
 replays/replay_data.zarr.zip
 initial_prediction
 .venv
-<<<<<<< Updated upstream
 checkpoint.pth
-=======
 replay.json
->>>>>>> Stashed changes

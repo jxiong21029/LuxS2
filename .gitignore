@@ -3,6 +3,7 @@
 __pycache__
 figures
 replay_data.zarr
+replay_data.zarr.zip
 replays/*.csv
 replays/*/*.bl2
 replays/*/*.json

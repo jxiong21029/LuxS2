@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import tqdm
 import zarr
+import zarr.core
 from torch.utils.data import DataLoader, Dataset
 
 from model import LuxAIModel, UNet, LRaspp

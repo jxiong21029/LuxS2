@@ -4,14 +4,14 @@ from torch import nn
 
 
 class LuxAIModel(nn.Module):
-    def __init__(self):
+    def __init__(self, kernel_size=1):
         super(LuxAIModel, self).__init__()
 
         # baseline architecture: CNN with 1x1 kernel followed by linear layer
         # (for both regression and "segmentation")
-        self.types_conv = nn.Conv2d(41, 13, 1)
-        self.resources_conv = nn.Conv2d(41, 5, 1)
-        self.quantities_conv = nn.Conv2d(41, 1, 1)
+        self.types_conv = nn.Conv2d(41, 13, kernel_size, padding='same')
+        self.resources_conv = nn.Conv2d(41, 5, kernel_size, padding='same')
+        self.quantities_conv = nn.Conv2d(41, 1, kernel_size, padding='same')
 
     def forward(self, board):
         # board is of shape batch_size x 35 x 48 x 48

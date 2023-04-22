@@ -3,8 +3,19 @@ import sys
 import numpy as np
 from lux.config import EnvConfig
 from lux.utils import direction_to, my_turn_to_place_factory
+from luxai_s2.map.board import Board
 from luxai_s2.state import State
 from preprocessing import get_obs
+from early_game.placement import factory_heuristic
+
+
+def display(*args, **kwargs) -> None:
+    """Display something for debugging purposes."""
+    print(*args, **kwargs, file=sys.stderr)
+
+def valid_factories(state: State) -> np.ndarray:
+    """Return a list of valid factory placement locations."""
+    return np.array(list(zip(*np.where(state.board.valid_spawns_mask == 1))))
 
 
 class Agent:
@@ -22,7 +33,6 @@ class Agent:
         else:
             # factory placement period
             game_state = State.from_obs(obs, self.env_cfg)
-            print(game_state.board.__dict__.keys(), file=sys.stderr)
 
             # how many factories you have left to place
             factories_to_place = game_state.teams[
@@ -33,14 +43,16 @@ class Agent:
                 game_state.teams[self.player].place_first, step
             )
             if factories_to_place > 0 and my_turn_to_place:
-                potential_spawns = np.array(
-                    list(
-                        zip(*np.where(obs["board"]["valid_spawns_mask"] == 1))
-                    )
+                potential_spawns = valid_factories(game_state)
+                spawn_loc = max(
+                    potential_spawns,
+                    key=lambda spawn: factory_heuristic(game_state, spawn),
                 )
-                spawn_loc = potential_spawns[
-                    np.random.randint(0, len(potential_spawns))
-                ]
+                # display(spawn_loc)
+                # random placement
+                # spawn_loc = potential_spawns[
+                #     np.random.randint(0, len(potential_spawns))
+                # ]
                 return dict(spawn=spawn_loc, metal=150, water=150)
             return dict()
 

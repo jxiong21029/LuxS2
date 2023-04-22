@@ -13,6 +13,7 @@ dependencies:
   - pytorch
   - pytorch-cuda
   - requests
+  - scikit-learn
   - seaborn
   - torchvision
   - tqdm

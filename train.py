@@ -31,9 +31,13 @@ class LuxAIDataset(Dataset):
         resource_mask = (5 <= self.array["action_types"][idx]) * (
             self.array["action_types"][idx] <= 10
         )
+        meta = torch.zeros((self.array["obs_meta"][idx].shape[0], 48, 48))
+        for i in range(self.array["obs_meta"][idx].shape[0]):
+            meta[i] = torch.full((48, 48), self.array["obs_meta"][idx][i])
+        board = torch.cat((torch.tensor(self.array["obs_tiles"][idx]), meta), 0)
 
         return (
-            self.array["obs_tiles"][idx],
+            board,
             unit_mask,
             resource_mask,
             self.array["action_types"][idx],

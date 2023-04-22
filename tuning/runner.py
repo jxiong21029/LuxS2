@@ -14,6 +14,13 @@ LOADER_WORKERS = 1
 EPOCHS = 4
 
 
+factory = {
+    "linear": LuxAIModel,
+    "unet": UNet,
+    "lraspp": LRaspp,
+}
+
+
 # extraneous parmeter slots
 # useful for model-specific params
 extras = {
@@ -53,7 +60,7 @@ def trial(config):
 
     print(config["model"], kwargs)
 
-    network = config["model"](**kwargs)
+    network = factory[config["model"]](**kwargs)
 
     logger = Logger()
     trainer = Trainer(
@@ -85,13 +92,13 @@ def main():
         metric="loss",
         mode="min",
         throw_on_exception=True,
-        trial_gpus=1,
+        trial_gpus=0.25,
     )
 
     models = {
-        "linear": (LuxAIModel, {}),
-        "unet": (UNet, {"extra_1": ("out", [20, 30, 40])}),
-        "lraspp": (LRaspp, {"extra_1": ("out", [20, 30, 40])}),
+        "linear": {},
+        "unet": {"extra_1": ("out", [20, 30])},
+        "lraspp": {"extra_1": ("out", [20, 30])},
     }
 
     params = {
@@ -100,7 +107,7 @@ def main():
         "weight_decay": [1e-5],
     }
 
-    for _, (model, options) in models.items():
+    for model, options in models.items():
         # i.e. if models = {'linear': (A, {'extra_1': ('param', [1, 2])})}
         # we want to produce
         # {

@@ -352,8 +352,8 @@ class Tuner:
         mode="max",
         plot_dir="tuner_plots",
         ckpt_filename="tuner.ckpt",
-        trial_cpus=1,
-        trial_gpus=0,
+        trial_cpus: float=1,
+        trial_gpus: float=0,
         throw_on_exception=False,
     ):
         for k, v in spec.items():

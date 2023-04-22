@@ -40,10 +40,10 @@ def trial(config):
         weight_decay=config["weight_decay"],
     )
 
-    trainer.accuracy()
+    trainer.evaluate()
     for _ in range(EPOCHS):
         trainer.train()
-        trainer.accuracy()
+        trainer.evaluate()
         yield logger
 
 

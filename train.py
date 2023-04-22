@@ -161,13 +161,13 @@ if __name__ == "__main__":
         dataset,
         batch_size=16,
         shuffle=True,
-        # pin_memory=torch.cuda.is_available(),
+        pin_memory=torch.cuda.is_available(),
         drop_last=True,
-        # num_workers=1,
+        num_workers=1,
     )
     network = LuxAIModel()
 
     trainer = Trainer(train_dataloader, network, Logger())
-    # trainer.train(verbose=True)
+    trainer.train(verbose=True)
     trainer.evaluate(verbose=True)
     print(trainer.logger.data)

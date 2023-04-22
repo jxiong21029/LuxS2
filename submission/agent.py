@@ -6,12 +6,16 @@ from lux.utils import direction_to, my_turn_to_place_factory
 from luxai_s2.map.board import Board
 from luxai_s2.state import State
 from preprocessing import get_obs
-from early_game.placement import factory_heuristic
+
+from early_game.placement import SetupEstimator
+
+BOARD_SIZE = (48, 48)
 
 
 def display(*args, **kwargs) -> None:
     """Display something for debugging purposes."""
     print(*args, **kwargs, file=sys.stderr)
+
 
 def valid_factories(state: State) -> np.ndarray:
     """Return a list of valid factory placement locations."""
@@ -44,11 +48,10 @@ class Agent:
             )
             if factories_to_place > 0 and my_turn_to_place:
                 potential_spawns = valid_factories(game_state)
-                spawn_loc = max(
-                    potential_spawns,
-                    key=lambda spawn: factory_heuristic(game_state, spawn),
-                )
-                # display(spawn_loc)
+
+                scores = SetupEstimator().predict(game_state.board)
+                indices = np.ravel_multi_index(potential_spawns.T, BOARD_SIZE)
+                spawn_loc = potential_spawns[np.argmax(scores[indices])]
                 # random placement
                 # spawn_loc = potential_spawns[
                 #     np.random.randint(0, len(potential_spawns))

@@ -1,13 +1,13 @@
 import numpy as np
 import scipy.linalg
 import sklearn.gaussian_process.kernels as kernels
+import torch
 import zarr
 from luxai_s2.state import State
 from sklearn.base import BaseEstimator
 from sklearn.gaussian_process.kernels import Kernel
 from sklearn.utils.estimator_checks import check_estimator
 from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
-import torch
 
 BEST_COEFS = np.array([1, 1, -1, -1])
 BEST_SCALES = np.array([1, 1, 1, 1])
@@ -36,29 +36,34 @@ class SetupEstimator(BaseEstimator):
         names = ["ice", "ore", "rubble", "factory_occupancy_map"]
         board_shape = board.ice.shape
         locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
-        # fmt: off
-        return torch.softmax(np.array([
-            sum(
-                (
-                    coef
-                    * kernel_regr(
-                        locs,
-                        getattr(board, name).flatten(),
-                        loc[np.newaxis, :],
-                        kernels.Matern(length_scale, smooth),
-                    )
-                    for name, coef, length_scale, smooth in zip(
-                        names,
-                        self.coefs,
-                        self.length_scales,
-                        self.smoothness,
-                    )
-                ),
-                start=np.array([0]),
-            ).item()
-            for loc in locs
-        ]), dim=0)
-        # fmt: on
+        return torch.softmax(
+            torch.Tensor(
+                [
+                    sum(
+                        (
+                            coef
+                            * kernel_regr(
+                                locs,
+                                getattr(board, name).flatten(),
+                                loc[np.newaxis, :],
+                                kernels.Matern(
+                                    length_scale=length_scale, nu=smooth
+                                ),
+                            )
+                            for name, coef, length_scale, smooth in zip(
+                                names,
+                                self.coefs,
+                                self.length_scales,
+                                self.smoothness,
+                            )
+                        ),
+                        start=np.array([0]),
+                    ).item()
+                    for loc in locs
+                ]
+            ),
+            dim=0,
+        ).numpy()
 
 
 def solve(A: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -89,29 +94,6 @@ def kernel_regr(
 ) -> np.ndarray:
     """Estimate y_test with kernel linear regression."""
     return kernel(x_test, x_train) @ y_train
-
-
-def factory_heuristic(state: State, loc: np.ndarray) -> float:
-    """Given a (i, j)-th location, find its placement score."""
-    Matern = kernels.Matern
-    features = [
-        ("ice", 1, Matern(length_scale=1, nu=1 / 2)),
-        ("ore", 1, Matern(length_scale=1, nu=1 / 2)),
-        ("rubble", -0.5, Matern(length_scale=1, nu=1 / 2)),
-        ("factory_occupancy_map", -1, Matern(length_scale=1, nu=1 / 2)),
-    ]
-    board = state.board
-    board_shape = board.ice.shape
-    locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
-    point = loc[np.newaxis, :]
-    return sum(
-        (
-            coef
-            * kernel_regr(locs, getattr(board, name).flatten(), point, kernel)
-            for name, coef, kernel in features
-        ),
-        start=np.array([0]),
-    ).item()
 
 
 if __name__ == "__main__":

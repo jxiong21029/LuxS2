@@ -4,7 +4,7 @@ import torch
 import zarr
 from torch.utils.data import DataLoader
 
-from model import LuxAIModel, UNet
+from model import LuxAIModel, LRaspp, UNet
 from train import LuxAIDataset, Trainer
 from tuning.logger import Logger
 from tuning.tuning import Tuner
@@ -89,8 +89,9 @@ def main():
     )
 
     models = {
-        "unet": (UNet, {"extra_1": ("out", [20, 30, 40])}),
         "linear": (LuxAIModel, {}),
+        "unet": (UNet, {"extra_1": ("out", [20, 30, 40])}),
+        "lraspp": (LRaspp, {"extra_1": ("out", [20, 30, 40])}),
     }
 
     params = {

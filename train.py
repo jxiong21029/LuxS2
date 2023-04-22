@@ -5,7 +5,7 @@ import tqdm
 import zarr
 from torch.utils.data import DataLoader, Dataset
 
-from model import LuxAIModel, UNet
+from model import LuxAIModel, UNet, LRaspp
 from tuning.logger import Logger
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -165,10 +165,10 @@ if __name__ == "__main__":
         drop_last=True,
         num_workers=1,
     )
-    network = UNet()
+    network = LRaspp()
 
     trainer = Trainer(train_dataloader, network, Logger())
-    for _ in range(10):
+    for _ in range(1):
         trainer.train(verbose=True)
         trainer.evaluate(verbose=True)
         print(trainer.logger.data)

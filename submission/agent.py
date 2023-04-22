@@ -46,5 +46,7 @@ class Agent:
 
     def act(self, step: int, obs, remainingOverageTime: int = 60):
         actions = dict()
+
         obs = State.from_obs(obs, self.env_cfg)
+
         return actions

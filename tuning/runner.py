@@ -1,9 +1,10 @@
 import itertools
+
 import torch
 import zarr
+from torch.utils.data import DataLoader
 
 from model import LuxAIModel
-from torch.utils.data import DataLoader
 from train import LuxAIDataset, Trainer
 from tuning.logger import Logger
 from tuning.tuning import Tuner
@@ -12,8 +13,9 @@ DATASET = "replays/replay_data_zarr/replay_data.zarr"
 LOADER_WORKERS = 1
 EPOCHS = 4
 
+
 def trial(config):
-    missing = ({"lr", "weight_decay", "batch_size"} - config.keys())
+    missing = {"lr", "weight_decay", "batch_size"} - config.keys()
     assert not missing, f"missing keys: {missing}"
 
     array = zarr.open(DATASET)
@@ -71,6 +73,7 @@ def main():
         tuner.add(config)
 
     tuner.run()
+
 
 if __name__ == "__main__":
     main()

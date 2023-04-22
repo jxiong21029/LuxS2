@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import tqdm
 import zarr
 from torch.utils.data import DataLoader, Dataset
 
@@ -12,11 +13,14 @@ print(device)
 
 
 class LuxAIDataset(Dataset):
-    def __init__(self, array):
-        self.array = array
+    def __init__(self, array: zarr.core.Array, max_size=None):
+        self.array: zarr.core.Array = array
+        self.max_size = max_size
 
     def __len__(self):
-        return self.array["action_amounts"].shape[0]
+        if self.max_size is None:
+            return self.array.attrs["length"]
+        return min(self.max_size, self.array.attrs["length"])
 
     def __getitem__(self, idx):
         unit_mask = (
@@ -24,9 +28,8 @@ class LuxAIDataset(Dataset):
         ).astype(int)
 
         # we want a mask for when action type is 5-10
-        resource_mask = (
-            (5 <= self.array["action_types"][idx]) *
-            (self.array["action_types"][idx] <= 10)
+        resource_mask = (5 <= self.array["action_types"][idx]) * (
+            self.array["action_types"][idx] <= 10
         )
 
         return (
@@ -61,38 +64,13 @@ class Trainer:
             network.parameters(), lr=lr, weight_decay=weight_decay
         )
 
-    def accuracy(self):
-        self.network.eval()
-        type_correct, total_type = 0, 0
-        for example in self.dataloader:
-            (
-                board,
-                unit_mask,
-                _,
-                action_types,
-                _,
-                _,
-            ) = example
-            (
-                predicted_types,
-                _,
-                _,
-            ) = self.network(board.to(device))
-            predicted_types = torch.argmax(predicted_types, 3)
-            type_correct += torch.sum(
-                predicted_types == (
-                    action_types.to(device).long()
-                    * unit_mask.to(device)
-                )
-            )
-            total_type += torch.sum((unit_mask > 0).long())
-        self.logger.push(accuracy=type_correct / total_type)
-        self.logger.step()
-            
-
-    def train(self):
+    def train(self, verbose=False):
         self.network.train()
-        for example in self.dataloader:
+        for example in (
+            tqdm.tqdm(self.dataloader, desc="train")
+            if verbose
+            else self.dataloader
+        ):
             self.optimizer.zero_grad()
             (
                 board,
@@ -108,7 +86,7 @@ class Trainer:
                 predicted_quantities,
             ) = self.network(board.to(device))
             # predicted_types is batch_size x 48 x 48 x 13 (13 action types)
-            # predicted_resources is batch size x 48 x 48 x 4 (4 possible resources)
+            # predicted_resources is batch_size x 48 x 48 x 4 (4 resources)
             # predicted_quantites is batch_size x 48 x 48 x 1 (regression)
 
             ce_loss = torch.mean(
@@ -123,44 +101,73 @@ class Trainer:
                     predicted_resources.transpose(1, 3).transpose(2, 3),
                     (
                         action_resources.long().to(device)
-                        * resource_mask.to(device)
+                        # * resource_mask.to(device)
                     ),
                     reduction="none",
                 )
-                * unit_mask.to(device)
+                * resource_mask.to(device)
             )
             mse_loss = torch.mean(
                 torch.square(
-                    predicted_quantities
-                    - action_amounts.to(device)
+                    (predicted_quantities - action_amounts.to(device))
                     * unit_mask.to(device)
                     / 1000
                 )
             )
-            l = ce_loss + mse_loss
+            loss = ce_loss + mse_loss
 
-            l.backward()
+            loss.backward()
             self.optimizer.step()
 
-            self.logger.push(loss=l)
+            self.logger.push(loss=loss)
 
         self.logger.step()
+
+    def evaluate(self, verbose=False):
+        self.network.eval()
+        type_correct, total_type = 0, 0
+        for example in (
+            tqdm.tqdm(self.dataloader, desc="eval")
+            if verbose
+            else self.dataloader
+        ):
+            (
+                board,
+                unit_mask,
+                _,
+                action_types,
+                _,
+                _,
+            ) = example
+            (
+                predicted_types,
+                _,
+                _,
+            ) = self.network(board.to(device))
+            predicted_types = torch.argmax(predicted_types, 3)
+            type_correct += torch.sum(
+                (predicted_types == action_types.to(device).long())
+                * unit_mask.to(device)
+            )
+            total_type += torch.sum((unit_mask > 0).long())
+        self.logger.log(accuracy=type_correct / total_type)
 
 
 if __name__ == "__main__":
     # keys: action_amounts, action_resources, action_types, obs_meta, obs_tiles
     array = zarr.open("replays/replay_data_zarr/replay_data.zarr")
-    dataset = LuxAIDataset(array)
+    dataset = LuxAIDataset(array, max_size=5000)
     train_dataloader = DataLoader(
         dataset,
         batch_size=16,
         shuffle=True,
-        pin_memory=torch.cuda.is_available(),
+        # pin_memory=torch.cuda.is_available(),
         drop_last=True,
-        num_workers=1,
+        # num_workers=1,
     )
     network = LuxAIModel()
 
     trainer = Trainer(train_dataloader, network, Logger())
-    trainer.train()
-    trainer.accuracy()
+    # trainer.train(verbose=True)
+    trainer.evaluate(verbose=True)
+    print(trainer.logger.data)

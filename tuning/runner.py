@@ -92,7 +92,7 @@ def main():
         metric="loss",
         mode="min",
         throw_on_exception=True,
-        trial_gpus=0.25,
+        trial_gpus=0.5,
     )
 
     models = {
@@ -104,7 +104,7 @@ def main():
     params = {
         "batch_size": [16],
         "lr": [1e-3, 1e-2],
-        "weight_decay": [1e-5],
+        "weight_decay": [0],
     }
 
     for model, options in models.items():

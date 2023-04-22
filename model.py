@@ -16,7 +16,7 @@ class LuxAIModel(nn.Module):
         # board is of shape batch_size x 35 x 48 x 48
         predicted_types = (
             self.types_conv(board).transpose(1, 3).transpose(1, 2)
-        )  # shape is now batch_size x 48 x 48 x 14
+        )  # shape is now batch_size x 48 x 48 x 13
         predicted_resources = (
             self.resources_conv(board).transpose(1, 3).transpose(1, 2)
         )  # shape is now batch_size x 48 x 48 x 5
@@ -27,3 +27,21 @@ class LuxAIModel(nn.Module):
         )  # shape is now batch_size x 48 x 48
 
         return predicted_types, predicted_resources, predicted_quantities
+
+class UNet(nn.Module):
+    def __init__(self, out=20):
+        super(UNet, self).__init__()
+
+        self.fcn = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet', in_channels=35, out_channels=out, pretrained=False)
+        self.types_linear = nn.Linear(out, 13)
+        self.resources_linear = nn.Linear(out, 5)
+        self.quantities_linear = nn.Linear(out, 1)
+
+    def forward(self, board):
+        output = self.fcn(board).transpose(1, 3).transpose(1, 2)
+        # print(output.size())
+        predicted_types = self.types_linear(output)
+        predicted_resources = self.resources_linear(output)
+        predicted_quantites = self.quantities_linear(output)[:, :, :, 0]
+        # print(predicted_types.size())
+        return predicted_types, predicted_resources, predicted_quantites

@@ -85,12 +85,8 @@ class SetupEstimator(BaseEstimator):
         locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
         scores: NDArray[np.double] = self.coefs @ np.array(
             [
-                kernel_regr(
-                    locs,
-                    getattr(board, name).flatten(),
-                    locs,
-                    kernels.Matern(length_scale=length_scale, nu=smooth),
-                )
+                kernels.Matern(length_scale=length_scale, nu=smooth)(locs)
+                @ getattr(board, name).flatten()
                 for name, length_scale, smooth in zip(
                     names,
                     self.length_scales,

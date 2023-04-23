@@ -2,6 +2,7 @@ import numpy as np
 import scipy.linalg
 import sklearn.gaussian_process.kernels as kernels
 import zarr
+from numpy.typing import NDArray
 from scipy.stats import uniform
 from sklearn.base import BaseEstimator
 from sklearn.gaussian_process.kernels import Kernel
@@ -82,26 +83,21 @@ class SetupEstimator(BaseEstimator):
         ]
         board_shape = board.ice.shape
         locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
-        scores = np.array(
+        scores: NDArray[np.double] = self.coefs @ np.array(
             [
-                sum(
-                    coef
-                    * kernel_regr(
-                        locs,
-                        getattr(board, name).flatten(),
-                        loc[np.newaxis, :],
-                        kernels.Matern(length_scale=length_scale, nu=smooth),
-                    )
-                    for name, coef, length_scale, smooth in zip(
-                        names,
-                        self.coefs,
-                        self.length_scales,
-                        self.smoothness,
-                    )
+                kernel_regr(
+                    locs,
+                    getattr(board, name).flatten(),
+                    locs,
+                    kernels.Matern(length_scale=length_scale, nu=smooth),
                 )
-                for loc in locs
+                for name, length_scale, smooth in zip(
+                    names,
+                    self.length_scales,
+                    self.smoothness,
+                )
             ]
-        ).flatten()
+        )  # type: ignore
         diff = np.max(scores) - np.min(scores)
         return (scores - np.min(scores)) / (diff if diff != 0 else 1)
 

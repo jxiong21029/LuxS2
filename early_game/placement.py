@@ -1,8 +1,10 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.linalg
 import sklearn.gaussian_process.kernels as kernels
 import zarr
 from numpy.typing import NDArray
+from scipy.ndimage import gaussian_filter
 from scipy.stats import uniform
 from sklearn.base import BaseEstimator
 from sklearn.gaussian_process.kernels import Kernel
@@ -161,9 +163,25 @@ if __name__ == "__main__":
             for i in np.arange(array.attrs["length"])[starting_mask]
         ]
     )
-    total_factories = (factories[:, 0] + factories[:, 1]).reshape(
+    total_factories = factories[:, 0] + factories[:, 1]
+    filtered_factories = gaussian_filter(total_factories, sigma=(0, 2, 2))
+    final_factories = filtered_factories.reshape(
         factories.shape[0], np.product(factories.shape[2:])
     )
+
+    i = 0
+    fig = plt.figure()
+    plt.gray()
+
+    ax1 = fig.add_subplot(121)
+    ax2 = fig.add_subplot(122)
+    ax1.imshow(total_factories[i].reshape(BOARD_SHAPE))
+    plt.title("Factory placements")
+    ax2.imshow(filtered_factories[i].reshape(BOARD_SHAPE))
+    plt.title("Gaussian blurred")
+
+    # plt.legend()
+    plt.savefig("early_game/factory.png")
 
     # random search over hyperparameters
 
@@ -183,6 +201,6 @@ if __name__ == "__main__":
         ),  # disable cross validation
         random_state=1,
     )
-    search = random_search.fit(boards, total_factories)
+    search = random_search.fit(boards, final_factories)
     print(f"best parameters: {search.best_params_}")
     print(f"best mse: {-search.best_score_:.6f}")

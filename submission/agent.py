@@ -49,7 +49,7 @@ class Agent:
             if factories_to_place > 0 and my_turn_to_place:
                 potential_spawns = valid_factories(game_state)
 
-                scores = SetupEstimator().predict(game_state.board)
+                scores = SetupEstimator().fit().predict(game_state.board)
                 indices = np.ravel_multi_index(potential_spawns.T, BOARD_SIZE)
                 spawn_loc = potential_spawns[np.argmax(scores[indices])]
                 # random placement

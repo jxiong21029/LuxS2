@@ -15,6 +15,8 @@ from tqdm import tqdm
 np.random.seed(1)
 rng = np.random.default_rng(1)
 
+BOARD_SHAPE = (48, 48)
+
 VERBOSE = True  # enable tqdm
 
 # found by random search, mse was ...
@@ -69,7 +71,16 @@ class SetupEstimator(BaseEstimator):
         self.length_scales = length_scales
         self.smoothness = smoothness
 
-    def fit(self, X, y) -> "SetupEstimator":  # pyright: ignore
+    def fit(self, X=None, y=None) -> "SetupEstimator":  # pyright: ignore
+        # pre-compute kernel matrices
+        locs = np.indices(BOARD_SHAPE).reshape((2, np.product(BOARD_SHAPE))).T
+        self.__kernel_matrices = [  # pyright: ignore
+            kernels.Matern(length_scale=length_scale, nu=smooth)(locs)
+            for length_scale, smooth in zip(
+                self.length_scales, self.smoothness
+            )
+        ]
+
         self.is_fitted_ = True
         return self
 
@@ -81,17 +92,10 @@ class SetupEstimator(BaseEstimator):
             "rubble",
             # "factory_occupancy_map",
         ]
-        board_shape = board.ice.shape
-        locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
         scores: NDArray[np.double] = self.coefs @ np.array(
             [
-                kernels.Matern(length_scale=length_scale, nu=smooth)(locs)
-                @ getattr(board, name).flatten()
-                for name, length_scale, smooth in zip(
-                    names,
-                    self.length_scales,
-                    self.smoothness,
-                )
+                self.__kernel_matrices[i] @ getattr(board, name).flatten()
+                for i, name in enumerate(names)
             ]
         )  # type: ignore
         diff = np.max(scores) - np.min(scores)
@@ -140,7 +144,7 @@ def kernel_regr(
 if __name__ == "__main__":
     # assert check_estimator(SetupEstimator()), "invalid estimator"
     # number of hyperparameter settings to check
-    ITERS = int(1e1)
+    ITERS = int(2e1)
 
     # data processing
 

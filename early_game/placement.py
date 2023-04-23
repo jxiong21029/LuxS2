@@ -1,17 +1,58 @@
 import numpy as np
 import scipy.linalg
 import sklearn.gaussian_process.kernels as kernels
-import torch
 import zarr
-from luxai_s2.state import State
+from scipy.stats import uniform
 from sklearn.base import BaseEstimator
 from sklearn.gaussian_process.kernels import Kernel
-from sklearn.utils.estimator_checks import check_estimator
-from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
+from sklearn.model_selection import RandomizedSearchCV, ShuffleSplit
+from tqdm import tqdm
 
-BEST_COEFS = np.array([1, 1, -1, -1])
-BEST_SCALES = np.array([1, 1, 1, 1])
-BEST_SMOOTH = np.array([1 / 2, 1 / 2, 1 / 2, 1 / 2])
+# from sklearn.utils.estimator_checks import check_estimator
+# from sklearn.utils.validation import check_array, check_is_fitted, check_X_y
+
+np.random.seed(1)
+rng = np.random.default_rng(1)
+
+VERBOSE = True  # enable tqdm
+
+# found by random search, mse was ...
+BEST_COEFS = np.array([1, 1, -1])
+BEST_SCALES = np.array([1, 1, 1])
+BEST_SMOOTH = np.array([1 / 2, 1 / 2, 1 / 2])
+
+
+class TrainBoard:
+    """Board object for training purposes."""
+
+    def __init__(self, board: np.ndarray) -> None:
+        """Save slices of board as the right variables."""
+        self.ice = board[0]
+        self.ore = board[1]
+        self.rubble = board[2]
+
+
+class SampleIID:
+    """Sample independently and identically (i.i.d.) from the distribution."""
+
+    def __init__(self, rv, size: int = 1) -> None:
+        """Take rv as either a scipy random variable or a list of options."""
+        self.rv = rv
+        self.size = size
+
+    def rvs(
+        self,
+        random_state: np.random.Generator
+        | np.random.RandomState
+        | None = None,
+    ):
+        """Take size i.i.d. samples from the random variable."""
+        random_state = rng if random_state is None else random_state
+        return (
+            random_state.choice(self.rv, size=self.size, replace=True)
+            if isinstance(self.rv, list)
+            else self.rv.rvs(size=self.size, random_state=random_state)
+        )
 
 
 class SetupEstimator(BaseEstimator):
@@ -31,39 +72,47 @@ class SetupEstimator(BaseEstimator):
         self.is_fitted_ = True
         return self
 
-    def predict(self, board) -> np.ndarray:
+    def __predict(self, board) -> np.ndarray:
         """Predict the factory scores for a board."""
-        names = ["ice", "ore", "rubble", "factory_occupancy_map"]
+        names = [
+            "ice",
+            "ore",
+            "rubble",
+            # "factory_occupancy_map",
+        ]
         board_shape = board.ice.shape
         locs = np.indices(board_shape).reshape((2, np.product(board_shape))).T
-        return torch.softmax(
-            torch.Tensor(
-                [
-                    sum(
-                        (
-                            coef
-                            * kernel_regr(
-                                locs,
-                                getattr(board, name).flatten(),
-                                loc[np.newaxis, :],
-                                kernels.Matern(
-                                    length_scale=length_scale, nu=smooth
-                                ),
-                            )
-                            for name, coef, length_scale, smooth in zip(
-                                names,
-                                self.coefs,
-                                self.length_scales,
-                                self.smoothness,
-                            )
-                        ),
-                        start=np.array([0]),
-                    ).item()
-                    for loc in locs
-                ]
-            ),
-            dim=0,
-        ).numpy()
+        scores = np.array(
+            [
+                sum(
+                    coef
+                    * kernel_regr(
+                        locs,
+                        getattr(board, name).flatten(),
+                        loc[np.newaxis, :],
+                        kernels.Matern(length_scale=length_scale, nu=smooth),
+                    )
+                    for name, coef, length_scale, smooth in zip(
+                        names,
+                        self.coefs,
+                        self.length_scales,
+                        self.smoothness,
+                    )
+                )
+                for loc in locs
+            ]
+        ).flatten()
+        diff = np.max(scores) - np.min(scores)
+        return (scores - np.min(scores)) / (diff if diff != 0 else 1)
+
+    def predict(self, boards, verbose: bool = VERBOSE):
+        """Predict the factory scores for a board or multiple boards."""
+        wrap = tqdm if verbose else lambda x: x
+        return (
+            np.array([self.__predict(board) for board in wrap(boards)])
+            if isinstance(boards, list)
+            else self.__predict(boards)
+        )
 
 
 def solve(A: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -98,9 +147,46 @@ def kernel_regr(
 
 if __name__ == "__main__":
     # assert check_estimator(SetupEstimator()), "invalid estimator"
+    # number of hyperparameter settings to check
+    ITERS = int(1e1)
+
+    # data processing
 
     array = zarr.open("replays/replay_data_zarr/replay_data.zarr")
     time_log1p = array["obs_meta"][: array.attrs["length"]][:, 2]
-    starting_mask = np.isclose(time_log1p, 0, atol=1e-6)
-    print(starting_mask.sum(), array.attrs["length"])
-    # print(array["obs_tiles"])
+    starting_mask = np.isclose(time_log1p, 0, atol=1e-6)  # type: ignore
+    boards = [
+        TrainBoard(np.array(array["obs_tiles"][i, :3]))
+        for i in np.arange(array.attrs["length"])[starting_mask]
+    ]
+    factories = np.array(
+        [
+            array["obs_tiles"][i, 23:25]
+            for i in np.arange(array.attrs["length"])[starting_mask]
+        ]
+    )
+    total_factories = (factories[:, 0] + factories[:, 1]).reshape(
+        factories.shape[0], np.product(factories.shape[2:])
+    )
+
+    # random search over hyperparameters
+
+    features = 3
+    param_grid = {
+        "coefs": SampleIID(uniform(loc=-1, scale=2), size=features),
+        "length_scales": SampleIID(uniform(loc=0, scale=20), size=features),
+        "smoothness": SampleIID([1 / 2, 3 / 2, 5 / 2, np.inf], size=features),
+    }
+    random_search = RandomizedSearchCV(
+        estimator=SetupEstimator(),
+        param_distributions=param_grid,
+        n_iter=ITERS,
+        scoring="neg_mean_squared_error",
+        cv=ShuffleSplit(
+            test_size=len(boards) - 1, n_splits=1, random_state=0
+        ),  # disable cross validation
+        random_state=1,
+    )
+    search = random_search.fit(boards, total_factories)
+    print(f"best parameters: {search.best_params_}")
+    print(f"best mse: {-search.best_score_:.6f}")

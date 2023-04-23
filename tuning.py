@@ -15,7 +15,7 @@ import numpy as np
 import ray
 import seaborn as sns
 
-from tuning.logger import Logger
+from logger import Logger
 
 
 def iqm(scores: List[float]):
@@ -29,8 +29,8 @@ def iqm(scores: List[float]):
     return np.mean(scores[lowercut:uppercut])
 
 
-# https://arxiv.org/abs/2108.13264 IQM with bootstrapped confidence intervals, with
-# support for NaN results (e.g. incomplete trials)
+# https://arxiv.org/abs/2108.13264 IQM with bootstrapped confidence intervals,
+# with support for NaN results (e.g. incomplete trials)
 def bootstrapped_iqm(runs: np.ndarray, iters=1000, alpha=0.95, seed=42):
     assert 0 < alpha < 1
 
@@ -352,8 +352,8 @@ class Tuner:
         mode="max",
         plot_dir="tuner_plots",
         ckpt_filename="tuner.ckpt",
-        trial_cpus: float=1,
-        trial_gpus: float=0,
+        trial_cpus: float = 1,
+        trial_gpus: float = 0,
         throw_on_exception=False,
     ):
         for k, v in spec.items():

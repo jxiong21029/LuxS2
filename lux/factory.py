@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from sys import stderr
 
 import numpy as np
+
 from lux.cargo import UnitCargo
 from lux.config import EnvConfig
 

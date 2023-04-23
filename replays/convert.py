@@ -8,7 +8,6 @@ import numpy as np
 import tqdm
 import zarr
 from luxai_s2 import LuxAI_S2
-
 from submission.preprocessing import get_actions, get_obs
 
 

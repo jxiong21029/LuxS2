@@ -4,10 +4,7 @@ import torch.nn as nn
 import tqdm
 import zarr
 import zarr.core
-from torch.utils.data import DataLoader, Dataset
-
-from model import LuxAIModel, UNet, LRaspp
-from tuning.logger import Logger
+from torch.utils.data import Dataset
 
 device = "cuda:0" if torch.cuda.is_available() else "cpu"
 print(device)
@@ -35,7 +32,9 @@ class LuxAIDataset(Dataset):
         meta = torch.zeros((self.array["obs_meta"][idx].shape[0], 48, 48))
         for i in range(self.array["obs_meta"][idx].shape[0]):
             meta[i] = torch.full((48, 48), self.array["obs_meta"][idx][i])
-        board = torch.cat((torch.tensor(self.array["obs_tiles"][idx]), meta), 0)
+        board = torch.cat(
+            (torch.tensor(self.array["obs_tiles"][idx]), meta), 0
+        )
 
         return (
             board,
@@ -50,13 +49,11 @@ class LuxAIDataset(Dataset):
 class Trainer:
     def __init__(
         self,
-        dataloader,
         network,
         logger,
         lr=1e-3,
         weight_decay=0,
     ):
-        self.dataloader = dataloader
         self.network = network
         self.network.to(device)
         self.logger = logger
@@ -69,12 +66,12 @@ class Trainer:
             network.parameters(), lr=lr, weight_decay=weight_decay
         )
 
-    def train(self, verbose=False):
+    def train(self, dataloader, verbose=False):
         self.network.train()
         for example in (
-            tqdm.tqdm(self.dataloader, desc="train")
+            tqdm.tqdm(dataloader, desc="train", miniters=100)
             if verbose
-            else self.dataloader
+            else dataloader
         ):
             self.optimizer.zero_grad()
             (
@@ -124,56 +121,70 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-            self.logger.push(loss=loss)
+            self.logger.push(train_loss=loss)
 
         self.logger.step()
 
-    def evaluate(self, verbose=False):
+    def evaluate(self, dataloader, verbose=False):
         self.network.eval()
         type_correct, total_type = 0, 0
+        total_loss = 0
         for example in (
-            tqdm.tqdm(self.dataloader, desc="eval")
+            tqdm.tqdm(dataloader, desc="eval", miniters=100)
             if verbose
-            else self.dataloader
+            else dataloader
         ):
-            (
-                board,
-                unit_mask,
-                _,
-                action_types,
-                _,
-                _,
-            ) = example
-            (
-                predicted_types,
-                _,
-                _,
-            ) = self.network(board.to(device))
-            predicted_types = torch.argmax(predicted_types, 3)
-            type_correct += torch.sum(
-                (predicted_types == action_types.to(device).long())
-                * unit_mask.to(device)
-            )
-            total_type += torch.sum((unit_mask > 0).long())
-        self.logger.log(accuracy=type_correct / total_type)
+            with torch.no_grad():
+                (
+                    board,
+                    unit_mask,
+                    resource_mask,
+                    action_types,
+                    action_resources,
+                    action_amounts,
+                ) = example
+                (
+                    predicted_types,
+                    predicted_resources,
+                    predicted_quantities,
+                ) = self.network(board.to(device))
 
+                top1_action_type = torch.argmax(predicted_types, 3)
+                type_correct += torch.sum(
+                    (top1_action_type == action_types.to(device).long())
+                    * unit_mask.to(device)
+                )
+                total_type += torch.sum((unit_mask > 0).long())
 
-if __name__ == "__main__":
-    # keys: action_amounts, action_resources, action_types, obs_meta, obs_tiles
-    array = zarr.open("replays/replay_data_zarr/replay_data.zarr")
-    dataset = LuxAIDataset(array, max_size=5000)
-    train_dataloader = DataLoader(
-        dataset,
-        batch_size=16,
-        shuffle=True,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=True,
-        num_workers=1,
-    )
-    network = LRaspp()
+                ce_loss = torch.mean(
+                    nn.functional.cross_entropy(
+                        predicted_types.transpose(1, 3).transpose(2, 3),
+                        action_types.long().to(device),
+                        reduction="none",
+                    )
+                    * unit_mask.to(device)
+                ) + torch.mean(
+                    nn.functional.cross_entropy(
+                        predicted_resources.transpose(1, 3).transpose(2, 3),
+                        (
+                            action_resources.long().to(device)
+                            # * resource_mask.to(device)
+                        ),
+                        reduction="none",
+                    )
+                    * resource_mask.to(device)
+                )
+                mse_loss = torch.mean(
+                    torch.square(
+                        (predicted_quantities - action_amounts.to(device))
+                        * unit_mask.to(device)
+                        / 1000
+                    )
+                )
+                loss = ce_loss + mse_loss
+                total_loss += loss.item() * board.shape[0]
 
-    trainer = Trainer(train_dataloader, network, Logger())
-    for _ in range(1):
-        trainer.train(verbose=True)
-        trainer.evaluate(verbose=True)
-        print(trainer.logger.data)
+        self.logger.log(
+            valid_accuracy=type_correct / total_type,
+            valid_loss=total_loss / len(dataloader.dataset),
+        )

@@ -22,9 +22,9 @@ BOARD_SHAPE = (48, 48)
 VERBOSE = True  # enable tqdm
 
 # found by random search, mse was ...
-BEST_COEFS = np.array([1, 1, -1])
-BEST_SCALES = np.array([1, 1, 1])
-BEST_SMOOTH = np.array([1 / 2, 1 / 2, 1 / 2])
+BEST_COEFS = np.array([0.64828904, 0.43409844, -0.16958656])
+BEST_SCALES = np.array([5.56194826, 2.32812855, 0.54782593])
+BEST_SMOOTH = np.array([2.5, 2.5, 0.5])
 
 
 class TrainBoard:
@@ -146,7 +146,7 @@ def kernel_regr(
 if __name__ == "__main__":
     # assert check_estimator(SetupEstimator()), "invalid estimator"
     # number of hyperparameter settings to check
-    ITERS = int(2e1)
+    ITERS = int(5e2)
 
     # data processing
 
@@ -199,7 +199,7 @@ if __name__ == "__main__":
         cv=ShuffleSplit(
             test_size=len(boards) - 1, n_splits=1, random_state=0
         ),  # disable cross validation
-        random_state=1,
+        random_state=2,
     )
     search = random_search.fit(boards, final_factories)
     print(f"best parameters: {search.best_params_}")

@@ -4,7 +4,7 @@ import pandas as pd
 import seaborn as sns
 
 from bandit import problems
-from bandit_setups.setup1 import Ts, alg_list, prob_list, setup_name, trials
+from bandit_setups.setup3 import Ts, alg_list, prob_list, setup_name, trials
 
 # TODO: heatmap of picks and regret over time per problem, all algorithms
 

@@ -1,46 +1,17 @@
-from functools import partial
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from bandit import algorithms, problems
+from bandit import problems
+from bandit_setups.setup1 import Ts, alg_list, prob_list, setup_name, trials
 
 # TODO: heatmap of picks and regret over time per problem, all algorithms
 
 np.set_printoptions(precision=3, suppress=True)
 sns.set_theme(context="paper", style="darkgrid")
 
-rng = np.random.default_rng(1)
-
 if __name__ == "__main__":
-    K = 10
-    Ts = [*np.arange(1, 1000, 100)]
-    # Ts = [*np.arange(1, 1000, 100), 10_000, 20_000, 40_000, 80_000]
-    trials = int(1e0)
-
-    prob_list = {
-        "trivial": problems.RankingProblem(K, 100, rng=rng),
-        "easy": (
-            problems.CondorcetProblem(
-                problems.RandomProblem(K - 1, rng=rng), rng=rng
-            )
-        ),
-        "medium": problems.CopelandProblem(K, rng=rng),
-        "hard": problems.RandomProblem(K, rng=rng),
-    }
-    alg_list = {
-        "naive": algorithms.naive,
-        "beat-the-mean": partial(algorithms.btm_online, gamma=1, rng=rng),
-        "scb": partial(algorithms.scb, rng=rng),
-        "dts": partial(algorithms.d_ts, alpha=0.51, plus=False, rng=rng),
-        "dts+": partial(algorithms.d_ts, alpha=0.51, plus=True, rng=rng),
-        "vdb-iw-independent": partial(algorithms.vdb_ind, rv=False, rng=rng),
-        "vdb-iw-shared": partial(algorithms.vdb, rv=False, rng=rng),
-        "vdb-rv-independent": partial(algorithms.vdb_ind, rv=True, rng=rng),
-        "vdb-rv-shared": partial(algorithms.vdb, rv=True, rng=rng),
-    }
     data = {
         "problem": [],
         "algorithm": [],
@@ -72,7 +43,7 @@ if __name__ == "__main__":
         col_wrap=2,
         kind="line",
     )
-    plt.savefig("figures/regret.png")
+    plt.savefig(f"figures/regret_{setup_name}.png")
     plt.clf()
 
     sns.relplot(
@@ -84,4 +55,4 @@ if __name__ == "__main__":
         col_wrap=2,
         kind="line",
     )
-    plt.savefig("figures/winner.png")
+    plt.savefig(f"figures/winner_{setup_name}.png")

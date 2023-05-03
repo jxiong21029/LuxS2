@@ -23,8 +23,9 @@ def valid_preferences(p: Preferences) -> bool:
     assert ((0 <= p) & (p <= 1)).all(), "entries must be valid probabilities"
     assert np.allclose(p + p.T, 1), "probabilities should be skew-symmetric"
     # this is technically redundant
-    # assert np.allclose(np.diagonal(p), 0.5), \
-    #     "playing an arm against itself must tie"
+    # assert np.allclose(
+    #     np.diagonal(p), 0.5
+    # ), "playing an arm against itself must tie"
     return True
 
 
@@ -35,6 +36,21 @@ def count_history(history: History) -> dict[Arm, int]:
         for arm in pair:
             count[arm] = count.get(arm, 0) + 1
     return count
+
+
+def d_kl(p: float, q: float) -> float:
+    """Kullback-Leibler (KL) divergence between Bernoulli distributions."""
+    if p == 0:
+        return -np.log1p(-q)
+    elif p == 1:
+        return -np.log(q)
+    else:
+        # fmt: off
+        return (
+            p  * (np.log(p) - np.log(q)) +
+            (1 - p) * (np.log1p(-p) - np.log1p(-q))
+        )
+        # fmt: on
 
 
 # Copeland functions (see [9, 4, 6])

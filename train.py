@@ -1,106 +1,190 @@
-import flax.linen as nn
-import jax
-import jax.numpy as jnp
-import matplotlib
-import matplotlib.pyplot as plt
-from jux.actions import bid_action_from_lux, factory_placement_action_from_lux
-from jux.env import JuxEnv
-from jux.state import State as JuxState
-from jux.utils import load_replay
+import numpy as np
+import torch
+import torch.nn as nn
+import tqdm
+import zarr
+import zarr.core
+from torch.utils.data import Dataset
 
-from action_selection import step_best
-
-matplotlib.use("agg")
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+print(device)
 
 
-# TODO: observations should include the units' action queues (in this case, simply the
-#   last action taken).
-@jax.jit
-def state_to_obs(state: JuxState):
-    # for now: heuristic behavior for bidding, factory placement, and factory actions
-    # only reward function is for supplying factories with water
-    # simplified obs reflects all info necessary for this
+class LuxAIDataset(Dataset):
+    def __init__(self, array: zarr.core.Array, max_size=None):
+        self.array: zarr.core.Array = array
+        self.max_size = max_size
 
-    ret = jnp.zeros((48, 48, 9))
+    def __len__(self):
+        if self.max_size is None:
+            return self.array.attrs["length"]
+        return min(self.max_size, self.array.attrs["length"])
 
-    # global: [sin t/50, cos t/50, log t, log (1000 - t),]
+    def __getitem__(self, idx):
+        unit_mask = (
+            np.sum(self.array["obs_tiles"][idx][9:13, :, :], 0) > 0
+        ).astype(int)
 
-    # tile: ice, x, y, [ore, rubble]
-    ret = ret.at[..., 0].set(jnp.arange(48).reshape(1, 48) / 48)
-    ret = ret.at[..., 1].set(jnp.arange(48).reshape(48, 1) / 48)
-    ret = ret.at[..., 2].set(state.board.ice)
-
-    for team in range(2):
-        # unit: light, [heavy,] cargo: ice, [ore, water, metal]; [power]
-        # separate obs for ally and enemy
-        unit_x = state.units.pos.x[team]
-        unit_y = state.units.pos.y[team]
-        cargo_ice = state.units.cargo.ice[team]
-        ret = ret.at[unit_x, unit_y, 3 + team].set(1, mode="drop")
-        ret = ret.at[unit_x, unit_y, 5 + team].set(
-            cargo_ice / 100, mode="drop"
+        # we want a mask for when action type is 5-10
+        resource_mask = (5 <= self.array["action_types"][idx]) * (
+            self.array["action_types"][idx] <= 10
+        )
+        meta = torch.zeros((self.array["obs_meta"][idx].shape[0], 48, 48))
+        for i in range(self.array["obs_meta"][idx].shape[0]):
+            meta[i] = torch.full((48, 48), self.array["obs_meta"][idx][i])
+        board = torch.cat(
+            (torch.tensor(self.array["obs_tiles"][idx]), meta), 0
         )
 
-        # factory: occupancy, [center, cargo: ice, ore, water, metal; lichen connected]
-        # separate obs for ally and enemy
-        factory_occp_x = state.factories.occupancy.x[team]
-        factory_occp_y = state.factories.occupancy.y[team]
-        ret = ret.at[factory_occp_x, factory_occp_y, 7 + team].set(
-            1, mode="drop"
+        return (
+            board,
+            unit_mask,
+            resource_mask,
+            self.array["action_types"][idx],
+            self.array["action_resources"][idx],
+            self.array["action_amounts"][idx],
         )
 
-    return ret
 
+class Trainer:
+    def __init__(
+        self,
+        network,
+        logger,
+        lr=1e-3,
+        weight_decay=0,
+    ):
+        self.network = network
+        self.network.to(device)
+        self.logger = logger
+        self.params = {
+            "lr": lr,
+            "weight_decay": weight_decay,
+        }
 
-class QNet(nn.Module):
-    # returns predicted Q-values (for each agent)
-    # current plan is do things VDN-style and just sum the local Q-values
-    @nn.compact
-    def __call__(self, obs):
-        x = nn.Conv(32, kernel_size=(7, 7))(obs)
-        x = nn.relu(x)
-        x = nn.Conv(7, kernel_size=(1, 1))(x)
-        return x
+        self.optimizer = torch.optim.Adam(
+            network.parameters(), lr=lr, weight_decay=weight_decay
+        )
 
+    def train(self, dataloader, verbose=False):
+        self.network.train()
+        for example in (
+            tqdm.tqdm(dataloader, desc="train", miniters=100)
+            if verbose
+            else dataloader
+        ):
+            self.optimizer.zero_grad()
+            (
+                board,
+                unit_mask,
+                resource_mask,
+                action_types,
+                action_resources,
+                action_amounts,
+            ) = example
+            (
+                predicted_types,
+                predicted_resources,
+                predicted_quantities,
+            ) = self.network(board.to(device))
+            # predicted_types is batch_size x 48 x 48 x 13 (13 action types)
+            # predicted_resources is batch_size x 48 x 48 x 4 (4 resources)
+            # predicted_quantites is batch_size x 48 x 48 x 1 (regression)
 
-def main():
-    lux_env, lux_actions = load_replay(
-        f"https://www.kaggleusercontent.com/episodes/{46215591}.json"
-    )
-    jux_env, state = JuxEnv.from_lux(lux_env)
-    lux_act = next(lux_actions)
-    bid, faction = bid_action_from_lux(lux_act)
-    state, _ = jux_env.step_bid(state, bid, faction)
-    while state.real_env_steps < 0:
-        lux_act = next(lux_actions)
-        spawn, water, metal = factory_placement_action_from_lux(lux_act)
-        state, _ = jux_env.step_factory_placement(state, spawn, water, metal)
-
-    model = QNet()
-
-    key = jax.random.PRNGKey(42)
-    params = model.init(key, state_to_obs(state))
-
-    for i in range(1000):
-        action_values = model.apply(params, state_to_obs(state))
-        state: JuxState = step_best(state, action_values)
-        done = (state.n_factories == 0).any()
-        if done:
-            break
-        if i % 20 == 0:
-            print(
-                f"Units: {state.n_units.sum()}, Factories: {state.n_factories.sum()}"
+            ce_loss = torch.mean(
+                nn.functional.cross_entropy(
+                    predicted_types.transpose(1, 3).transpose(2, 3),
+                    action_types.long().to(device),
+                    reduction="none",
+                )
+                * unit_mask.to(device)
+            ) + torch.mean(
+                nn.functional.cross_entropy(
+                    predicted_resources.transpose(1, 3).transpose(2, 3),
+                    (
+                        action_resources.long().to(device)
+                        # * resource_mask.to(device)
+                    ),
+                    reduction="none",
+                )
+                * resource_mask.to(device)
             )
+            mse_loss = torch.mean(
+                torch.square(
+                    (predicted_quantities - action_amounts.to(device))
+                    * unit_mask.to(device)
+                    / 1000
+                )
+            )
+            loss = ce_loss + mse_loss
 
-        img = jux_env.render(state, mode="rgb_array")
-        fig, ax = plt.subplots(constrained_layout=True)
-        fig: plt.Figure
-        ax: plt.Axes
-        ax.axis("off")
-        ax.imshow(img)
-        fig.savefig(f"images/frame_{i:>03}")
-        plt.close(fig)
+            loss.backward()
+            self.optimizer.step()
 
+            self.logger.push(train_loss=loss)
 
-if __name__ == "__main__":
-    main()
+        self.logger.step()
+
+    def evaluate(self, dataloader, verbose=False):
+        self.network.eval()
+        type_correct, total_type = 0, 0
+        total_loss = 0
+        for example in (
+            tqdm.tqdm(dataloader, desc="eval", miniters=100)
+            if verbose
+            else dataloader
+        ):
+            with torch.no_grad():
+                (
+                    board,
+                    unit_mask,
+                    resource_mask,
+                    action_types,
+                    action_resources,
+                    action_amounts,
+                ) = example
+                (
+                    predicted_types,
+                    predicted_resources,
+                    predicted_quantities,
+                ) = self.network(board.to(device))
+
+                top1_action_type = torch.argmax(predicted_types, 3)
+                type_correct += torch.sum(
+                    (top1_action_type == action_types.to(device).long())
+                    * unit_mask.to(device)
+                )
+                total_type += torch.sum((unit_mask > 0).long())
+
+                ce_loss = torch.mean(
+                    nn.functional.cross_entropy(
+                        predicted_types.transpose(1, 3).transpose(2, 3),
+                        action_types.long().to(device),
+                        reduction="none",
+                    )
+                    * unit_mask.to(device)
+                ) + torch.mean(
+                    nn.functional.cross_entropy(
+                        predicted_resources.transpose(1, 3).transpose(2, 3),
+                        (
+                            action_resources.long().to(device)
+                            # * resource_mask.to(device)
+                        ),
+                        reduction="none",
+                    )
+                    * resource_mask.to(device)
+                )
+                mse_loss = torch.mean(
+                    torch.square(
+                        (predicted_quantities - action_amounts.to(device))
+                        * unit_mask.to(device)
+                        / 1000
+                    )
+                )
+                loss = ce_loss + mse_loss
+                total_loss += loss.item() * board.shape[0]
+
+        self.logger.log(
+            valid_accuracy=type_correct / total_type,
+            valid_loss=total_loss / len(dataloader.dataset),
+        )

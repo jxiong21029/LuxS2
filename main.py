@@ -1,89 +1,75 @@
-from functools import partial
+import json
+from argparse import Namespace
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-import seaborn as sns
+from luxai_s2.state import State
+from model import UNet
 
-from bandit import algorithms, problems
+from agent import Agent
+from lux.config import EnvConfig
+from lux.kit import process_obs, to_json
 
-# TODO: heatmap of picks and regret over time per problem, all algorithms
 
-np.set_printoptions(precision=3, suppress=True)
-sns.set_theme(context="paper", style="darkgrid")
+def read_input():
+    """
+    Reads input from stdin
+    """
+    try:
+        return input()
+    except EOFError as eof:
+        raise SystemExit(eof)
 
-rng = np.random.default_rng(1)
+
+def main():
+    env_cfg = None
+    i = 0
+
+    agents = {}
+    prev_obs = {}
+
+    while True:
+        inputs = read_input()
+        obs = json.loads(inputs)
+
+        observation = Namespace(
+            **dict(
+                step=obs["step"],
+                obs=json.dumps(obs["obs"]),
+                remainingOverageTime=obs["remainingOverageTime"],
+                player=obs["player"],
+                info=obs["info"],
+            )
+        )
+        if i == 0:
+            env_cfg = obs["info"]["env_cfg"]
+        i += 1
+
+        step = observation.step
+
+        player = observation.player
+        if step == 0:
+            env_cfg = EnvConfig.from_dict(env_cfg)
+
+            model = UNet()
+            agents[player] = Agent(
+                model, "whatever_filename_TODO.pth", player, env_cfg
+            )
+
+            prev_obs[player] = dict()
+
+        agent = agents[player]
+        obs = process_obs(
+            player, prev_obs[player], step, json.loads(observation.obs)
+        )
+        prev_obs[player] = obs
+        agent.step = step
+
+        if obs["real_env_steps"] < 0:
+            actions = agent.early_setup(step, obs)
+        else:
+            actions = agent.act(obs)
+
+        print(json.dumps(to_json(actions)))
+
 
 if __name__ == "__main__":
-    K = 10
-    Ts = [*np.arange(1, 1000, 100)]
-    # Ts = [*np.arange(1, 1000, 100), 10_000, 20_000, 40_000, 80_000]
-    trials = int(1e2)
-
-    # K = 10
-    # Ts = [100]
-    # trials = 1
-
-    prob_list = {
-        "trivial": problems.RankingProblem(K, 100, rng=rng),
-        # "easy": (
-        #     problems.CondorcetProblem(
-        #         problems.RandomProblem(K - 1, rng=rng),
-        #     rng=rng)
-        # ),
-        # "medium": problems.RandomProblem(K, rng=rng),
-        # "hard": problems.CopelandProblem(K, rng=rng),
-    }
-    alg_list = {
-        "naive": algorithms.naive,
-        # as [5] does in section 7
-        "dts": partial(algorithms.d_ts, alpha=0.6, rng=rng),
-        # "vdb-iw-independent": partial(algorithms.vdb_ind, rv=False, rng=rng),
-        "vdb-iw-shared": partial(algorithms.vdb, rv=False, rng=rng),
-        # "vdb-rv-independent": partial(algorithms.vdb_ind, rv=True, rng=rng),
-        "vdb-rv-shared": partial(algorithms.vdb, rv=True, rng=rng),
-    }
-    data = {
-        "problem": [],
-        "algorithm": [],
-        "time": [],
-        "regret": [],
-        "winner": [],
-    }
-
-    for problem_name, problem in prob_list.items():
-        for algorithm_name, algorithm in alg_list.items():
-            for T in Ts:
-                for _ in range(trials):
-                    problem.shuffle()
-                    k, history = problems.run_problem(problem, algorithm, T)
-                    data["problem"].append(problem_name)
-                    data["algorithm"].append(algorithm_name)
-                    data["time"].append(T)
-                    data["regret"].append(problem.regret(history))
-                    data["winner"].append(problem.is_winner(k))
-    data = pd.DataFrame(data)
-    # print(data)
-
-    sns.relplot(
-        data=data,
-        x="time",
-        y="regret",
-        hue="algorithm",
-        col="problem",
-        col_wrap=2,
-        kind="line",
-    )
-    plt.savefig("figures/regret.png")
-    plt.clf()
-
-    sns.relplot(
-        data=data,
-        x="time",
-        y="winner",
-        hue="algorithm",
-        col="problem",
-        col_wrap=2,
-        kind="line",
-    )
-    plt.savefig("figures/winner.png")
+    main()
